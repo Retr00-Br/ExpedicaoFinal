@@ -286,41 +286,43 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                     romaneio_atual = "-"
                     motorista_atual = "-"
                     
+                    # Lê o arquivo decodificando corretamente o padrão de relatórios locais
                     conteudo_csv = romaneio_file.getvalue().decode("utf-8", errors="ignore").splitlines()
                     
                     for linha in conteudo_csv:
                         linha_limpa = linha.strip()
-                        if not linha_limpa or "Nr. Romaneio" in linha_limpa: 
+                        if not linha_limpa:
                             continue
                         
-                        # Captura a linha que define o Romaneio e o Motorista (Ex: 11250 -  |  |  ;01/06/2026;TERCEIRO MATRIZ;;TERCEIRO - MATRIZ...)
-                        if ";" in linha_limpa and (("TERCEIRO" in linha_limpa.upper()) or ("MOTORISTA" in linha_limpa.upper()) or ("-  |" in linha_limpa)):
-                            colunas_topo = linha_limpa.split(";")
-                            if len(colunas_topo) > 0:
-                                # Pega o número limpo do romaneio antes do traço
-                                doc_rom = colunas_topo[0].split("-")[0].strip()
-                                if doc_rom.isdigit():
-                                    romaneio_atual = doc_rom
-                                
-                                # Captura o motorista/condutor que costuma ficar na coluna index 4 ou 6
-                                if len(colunas_topo) > 4 and colunas_topo[4].strip():
-                                    motorista_atual = colunas_topo[4].strip()
-                                elif len(colunas_topo) > 6 and colunas_topo[6].strip():
-                                    motorista_atual = colunas_topo[6].strip()
-                            continue
-
-                        # Processamento das linhas de Notas Fiscais estruturadas
-                        colunas = linha_limpa.split(";")
-                        if len(colunas) >= 12:
-                            # A NF fica geralmente na coluna de index 12 (Num.NF)
-                            num_nf_raw = colunas[12].strip() if len(colunas) > 12 else ""
+                        colunas = [c.strip() for c in linha_limpa.split(";")]
+                        
+                        # 1. IDENTIFICAÇÃO DO CABEÇALHO DO ROMANEIO (Ex: "11250 -  |  |  ")
+                        if len(colunas) > 0 and "-" in colunas[0] and "|" in colunas[0]:
+                            partes_rom = colunas[0].split("-")
+                            if partes_rom[0].strip().isdigit():
+                                romaneio_atual = partes_rom[0].strip()
                             
-                            # Validação para garantir que achamos o número da nota na linha
+                            # O motorista geralmente vem na mesma linha, após as datas/filtros do relatório
+                            for col_busca in colunas:
+                                if "MATRIZ" in col_busca.upper() or "TRANSPORTES" in col_busca.upper():
+                                    motorista_atual = col_busca
+                                    break
+                            continue
+                        
+                        # Pula linhas de títulos estruturais do relatório que não contêm dados operacionais
+                        if "Nr. Romaneio" in colunas[0] or "Emissão" in colunas[0]:
+                            continue
+                        
+                        # 2. CAPTURA DAS NOTAS FISCAIS (Coluna 2 [index 1] e Valor na Coluna 5 [index 4])
+                        if len(colunas) >= 5:
+                            num_nf_raw = colunas[1].strip()
+                            
+                            # Se for o número válido de uma NF
                             if num_nf_raw.isdigit() and num_nf_raw != "0":
                                 num_nf_limpo = str(int(num_nf_raw))
                                 
-                                # Captura o valor da nota técnica
-                                valor_raw = colunas[13].replace("R$", "").replace(".", "").replace(",", ".").strip() if len(colunas) > 13 else "0"
+                                # Limpa o valor monetário tirando pontos de milhar e ajustando a vírgula decimal
+                                valor_raw = colunas[4].replace("R$", "").replace(".", "").replace(",", ".").strip()
                                 try:
                                     valor_estimado = float(valor_raw)
                                 except:
@@ -328,13 +330,14 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                             
                                 nfs_romaneios[num_nf_limpo] = {
                                     "romaneio": romaneio_atual,
-                                    "motorista": motorista_atual,
+                                    "motorista": motorista_atual if motorista_atual != "-" else "MOTORISTA PADRÃO",
                                     "valor": valor_estimado
                                 }
 
                     lista_divergencias = []
                     notas_validadas = []
 
+                    # 3. CRUZAMENTO COM OS ARQUIVOS XML
                     for xml_file in xml_files:
                         tree = ET.parse(xml_file)
                         root = tree.getroot()
@@ -384,10 +387,10 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                 })
 
                     if salvar_dados_consolidados(notas_validadas, lista_divergencias):
-                        st.success(f"📊 Sucesso! {len(notas_validadas)} Notas e {len(lista_divergencias)} Divergências integradas ao Supabase.")
+                        st.success(f"📊 Sucesso! {len(notas_validadas)} Notas e {len(lista_divergencias)} Divergências processadas com sucesso.")
                         st.rerun()
                 except Exception as e:
-                    st.error(f"⚠️ Erro ao salvar dados no banco de dados: {e}")
+                    st.error(f"⚠️ Erro crítico no processamento: {e}")
 
 # ==============================================================================
 # MODO: DIVERGÊNCIAS DE XML (LENDO DIRETAMENTE DO SUPABASE)
