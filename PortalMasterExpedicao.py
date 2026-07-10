@@ -286,59 +286,56 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                     romaneio_atual = "-"
                     motorista_atual = "-"
                     
-                    # Lê as linhas do CSV tratando a decodificação de relatórios locais
                     conteudo_csv = romaneio_file.getvalue().decode("utf-8", errors="ignore").splitlines()
                     
                     for linha in conteudo_csv:
-                        linha_limpa = linha.strip()
+                        linha_limpa = float_v = linha.strip()
                         if not linha_limpa:
                             continue
                         
-                        # Divide a linha pelas colunas delimitadas por ';'
-                        colunas = [c.strip() for c in linha_limpa.split(";")]
+                        # Preserva os espaços em branco entre os ';' para não perder a contagem das colunas
+                        colunas = [c.strip() for c in linha.split(";")]
                         
-                        # 1. CAPTURA DO CABEÇALHO DO ROMANEIO (Linha inicial que contém '-' e '|')
+                        # 1. CAPTURA DO CABEÇALHO DO ROMANEIO
                         if len(colunas) > 0 and "-" in colunas[0] and "|" in colunas[0]:
                             partes_rom = colunas[0].split("-")
                             if partes_rom[0].strip().isdigit():
                                 romaneio_atual = partes_rom[0].strip()
                             
-                            # Busca o nome do motorista/empresa que está nas colunas seguintes da mesma linha
-                            for col_busca in colunas:
-                                if "MATRIZ" in col_busca.upper() or "TRANSPORTES" in col_busca.upper():
-                                    motorista_atual = col_busca
-                                    break
+                            # Condutor/Motorista fica exatamente na 5ª coluna (índice 4)
+                            if len(colunas) > 4 and colunas[4]:
+                                motorista_atual = colunas[4]
                             continue
                         
-                        # Pula linhas de títulos do relatório que não possuem dados de notas
-                        if "Nr. Romaneio" in colunas[0] or "Emissão" in colunas[0] or "Item" in colunas[0]:
+                        # Ignora linhas de cabeçalho descritivo
+                        if "Nr. Romaneio" in colunas[0] or "Filial" in colunas[0]:
                             continue
                         
-                        # 2. CAPTURA DAS NOTAS FISCAIS (Coluna Index 1 = NF, Coluna Index 4 = Valor Nota)
-                        if len(colunas) >= 5:
-                            num_nf_raw = colunas[1].strip()
+                        # 2. CAPTURA DAS NOTAS FISCAIS (Baseado na estrutura de índices reais do arquivo)
+                        if len(colunas) >= 12:
+                            num_nf_raw = colunas[10].strip()   # Num.NF fica no índice 10
+                            valor_raw = colunas[11].strip()    # Vl.NF fica no índice 11
                             
-                            # Valida se a coluna index 1 é realmente o número de uma NF válida (geralmente acima de 3 ou 4 dígitos)
-                            if num_nf_raw.isdigit() and len(num_nf_raw) >= 4:
+                            if num_nf_raw.isdigit() and num_nf_raw != "0":
                                 num_nf_limpo = str(int(num_nf_raw))
                                 
-                                # Processa e limpa o valor financeiro da nota na coluna index 4
-                                valor_raw = colunas[4].replace("R$", "").replace(".", "").replace(",", ".").strip()
+                                # Tratamento do valor padrão brasileiro (R$ 3.270,50 -> 3270.50)
+                                valor_limpo = valor_raw.replace("R$", "").replace(".", "").replace(",", ".").strip()
                                 try:
-                                    valor_estimado = float(valor_raw)
+                                    valor_estimado = float(valor_limpo)
                                 except:
                                     valor_estimado = 0.0
                                             
                                 nfs_romaneios[num_nf_limpo] = {
                                     "romaneio": romaneio_atual,
-                                    "motorista": motorista_atual if motorista_atual != "-" else "MOTORISTA NÃO IDENTIFICADO",
+                                    "motorista": motorista_atual if motorista_atual != "-" else "MOTORISTA PADRÃO",
                                     "valor": valor_estimado
                                 }
 
                     lista_divergencias = []
                     notas_validadas = []
 
-                    # 3. CONEXÃO E CRUZAMENTO COM OS ARQUIVOS XML ENVIADOS
+                    # 3. CRUZAMENTO COM OS ARQUIVOS XML
                     for xml_file in xml_files:
                         tree = ET.parse(xml_file)
                         root = tree.getroot()
@@ -365,7 +362,6 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                 except: 
                                     pass
 
-                            # Se a nota do XML bater com o número mapeado no CSV, associa ao romaneio
                             if nf_limpa in nfs_romaneios:
                                 notas_validadas.append({
                                     "numero_nf": nf_limpa,
@@ -379,7 +375,6 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                     "status_volta": "EM AGUARDO"
                                 })
                             else:
-                                # Caso contrário, vira nota órfã (Divergência)
                                 lista_divergencias.append({
                                     "Arquivo XML": xml_file.name,
                                     "Nota Fiscal": nf_limpa,
@@ -389,12 +384,12 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                     "Justificativa / Motivo": "🗺️ Erro de Roteirização (Faturado sem Viagem)"
                                 })
 
-                    # Faz o upload definitivo para as tabelas limpas do Supabase
                     if salvar_dados_consolidados(notas_validadas, lista_divergencias):
-                        st.success(f"📊 Sucesso! {len(notas_validadas)} Notas e {len(lista_divergencias)} Divergências sincronizadas com segurança.")
+                        st.success(f"📊 Sucesso! {len(notas_validadas)} Notas e {len(lista_divergencias)} Divergências processadas.")
                         st.rerun()
                 except Exception as e:
-                    st.error(f"⚠️ Erro crítico durante o processamento: {e}")
+                    st.error(f"⚠️ Erro crítico no processamento: {e}")
+                    
 # ==============================================================================
 # MODO: DIVERGÊNCIAS DE XML (LENDO DIRETAMENTE DO SUPABASE)
 # ==============================================================================
