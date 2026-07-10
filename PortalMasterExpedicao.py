@@ -15,8 +15,8 @@ st.set_page_config(
 # --- CONEXÃO COM O SUPABASE (VIA SECRETS SEGURO) ---
 @st.cache_resource
 def iniciar_conexao_supabase() -> Client:
-    url = st.secrets["https://supabase.com/dashboard/project/pjkoudyjyrfqlubxzfmk/settings/api-keys/legacy"]
-    key = st.secrets["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBqa291ZHlqeXJmcWx1Ynh6Zm1rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2MzAyMTUsImV4cCI6MjA5OTIwNjIxNX0.QdWwwvHjYSLKA5mRSB8EkI2WNIl4Cf5ZEw5R8Ou2oGs"]
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
 
 supabase = iniciar_conexao_supabase()
