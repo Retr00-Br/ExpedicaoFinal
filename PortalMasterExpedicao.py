@@ -290,40 +290,47 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                     
                     for linha in conteudo_csv:
                         linha_limpa = linha.strip()
-                        if not linha_limpa: 
+                        if not linha_limpa or "Nr. Romaneio" in linha_limpa: 
                             continue
                         
-                        if "ROMANEIO" in linha_limpa.upper():
-                            match_rom = re.search(r'(?:ROMANEIO\s*:\s*)(\w+)', linha_limpa, re.IGNORECASE)
-                            if match_rom:
-                                romaneio_atual = match_rom.group(1).strip()
-                            
-                            match_mot = re.search(r'(?:MOTORISTA\s*:\s*)([^|;\n]+)', linha_limpa, re.IGNORECASE)
-                            if match_mot:
-                                motorista_atual = match_mot.group(1).strip()
+                        # Captura a linha que define o Romaneio e o Motorista (Ex: 11250 -  |  |  ;01/06/2026;TERCEIRO MATRIZ;;TERCEIRO - MATRIZ...)
+                        if ";" in linha_limpa and (("TERCEIRO" in linha_limpa.upper()) or ("MOTORISTA" in linha_limpa.upper()) or ("-  |" in linha_limpa)):
+                            colunas_topo = linha_limpa.split(";")
+                            if len(colunas_topo) > 0:
+                                # Pega o número limpo do romaneio antes do traço
+                                doc_rom = colunas_topo[0].split("-")[0].strip()
+                                if doc_rom.isdigit():
+                                    romaneio_atual = doc_rom
+                                
+                                # Captura o motorista/condutor que costuma ficar na coluna index 4 ou 6
+                                if len(colunas_topo) > 4 and colunas_topo[4].strip():
+                                    motorista_atual = colunas_topo[4].strip()
+                                elif len(colunas_topo) > 6 and colunas_topo[6].strip():
+                                    motorista_atual = colunas_topo[6].strip()
                             continue
 
+                        # Processamento das linhas de Notas Fiscais estruturadas
                         colunas = linha_limpa.split(";")
-                        
-                        if len(colunas) >= 2:
-                            for col_val in colunas:
-                                col_val_clean = col_val.strip()
-                                if col_val_clean.isdigit() and len(col_val_clean) <= 9 and col_val_clean != "0":
-                                    num_nf_limpo = str(int(col_val_clean))
-                                    
+                        if len(colunas) >= 12:
+                            # A NF fica geralmente na coluna de index 12 (Num.NF)
+                            num_nf_raw = colunas[12].strip() if len(colunas) > 12 else ""
+                            
+                            # Validação para garantir que achamos o número da nota na linha
+                            if num_nf_raw.isdigit() and num_nf_raw != "0":
+                                num_nf_limpo = str(int(num_nf_raw))
+                                
+                                # Captura o valor da nota técnica
+                                valor_raw = colunas[13].replace("R$", "").replace(".", "").replace(",", ".").strip() if len(colunas) > 13 else "0"
+                                try:
+                                    valor_estimado = float(valor_raw)
+                                except:
                                     valor_estimado = 0.0
-                                    for c in colunas:
-                                        c_limpo = c.replace(",", ".").strip()
-                                        if c_limpo.replace(".", "", 1).isdigit() and "." in c_limpo and c_limpo != col_val_clean:
-                                            valor_estimado = float(c_limpo)
-                                            break
                                             
-                                    nfs_romaneios[num_nf_limpo] = {
-                                        "romaneio": romaneio_atual,
-                                        "motorista": motorista_atual,
-                                        "valor": valor_estimado
-                                    }
-                                    break
+                                nfs_romaneios[num_nf_limpo] = {
+                                    "romaneio": romaneio_atual,
+                                    "motorista": motorista_atual,
+                                    "valor": valor_estimado
+                                }
 
                     lista_divergencias = []
                     notas_validadas = []
