@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+from supabase import create_client, Client
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -11,40 +12,77 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- ESTADO DA SESSÃO (BANCO DE DADOS EM MEMÓRIA PARA TESTES) ---
-if 'bd_simulado' not in st.session_state:
-    st.session_state['bd_simulado'] = pd.DataFrame(columns=[
-        "numero_nf", "romaneio", "motorista", "cliente", "valor_nota", "data_emissao", "previsao_entrega", "status_ida",
-        "status_volta"
-    ])
+# --- CONEXÃO COM O SUPABASE (VIA SECRETS SEGURO) ---
+@st.cache_resource
+def iniciar_conexao_supabase() -> Client:
+    url = st.secrets["https://pjkoudyjyrfqlubxzfmk.supabase.co"]
+    key = st.secrets["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBqa291ZHlqeXJmcWx1Ynh6Zm1rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2MzAyMTUsImV4cCI6MjA5OTIwNjIxNX0.QdWwwvHjYSLKA5mRSB8EkI2WNIl4Cf5ZEw5R8Ou2oGs"]
+    return create_client(url, key)
 
-if 'divergencias_simuladas' not in st.session_state:
-    st.session_state['divergencias_simuladas'] = pd.DataFrame(columns=[
-        "Arquivo XML", "Nota Fiscal", "Cliente", "Previsão Entrega", "Status Auditoria", "Justificativa / Motivo"
-    ])
+supabase = iniciar_conexao_supabase()
 
+# --- FUNÇÕES DE INTERAÇÃO COM O BANCO ---
+def carregar_dados_principais():
+    try:
+        resposta = supabase.table("bd_expedicao").select("*").execute()
+        if resposta.data:
+            return pd.DataFrame(resposta.data)
+        return pd.DataFrame(columns=["numero_nf", "romaneio", "motorista", "cliente", "valor_nota", "data_emissao", "previsao_entrega", "status_ida", "status_volta"])
+    except Exception as e:
+        st.error(f"Erro ao ler banco de dados: {e}")
+        return pd.DataFrame(columns=["numero_nf", "romaneio", "motorista", "cliente", "valor_nota", "data_emissao", "previsao_entrega", "status_ida", "status_volta"])
 
-# --- FUNÇÕES DE MANIPULAÇÃO DO BANCO ---
+def carregar_divergencias():
+    try:
+        resposta = supabase.table("bd_divergencias").select("*").execute()
+        if resposta.data:
+            df = pd.DataFrame(resposta.data)
+            # Mapeia colunas do banco para exibição limpa na tela
+            df = df.rename(columns={
+                "arquivo_xml": "Arquivo XML",
+                "nota_fiscal": "Nota Fiscal",
+                "cliente": "Cliente",
+                "previsao_entrega": "Previsão Entrega",
+                "status_auditoria": "Status Auditoria",
+                "justificativa_motivo": "Justificativa / Motivo"
+            })
+            return df
+        return pd.DataFrame(columns=["Arquivo XML", "Nota Fiscal", "Cliente", "Previsão Entrega", "Status Auditoria", "Justificativa / Motivo"])
+    except Exception as e:
+        return pd.DataFrame(columns=["Arquivo XML", "Nota Fiscal", "Cliente", "Previsão Entrega", "Status Auditoria", "Justificativa / Motivo"])
+
 def salvar_dados_consolidados(dados_notas, dados_divergencias):
-    if dados_notas:
-        df_novos = pd.DataFrame(dados_notas)
-        st.session_state['bd_simulado'] = pd.concat([st.session_state['bd_simulado'], df_novos]).drop_duplicates(
-            subset=['numero_nf'], keep='last')
-    if dados_divergencias:
-        df_div_novos = pd.DataFrame(dados_divergencias)
-        st.session_state['divergencias_simuladas'] = pd.concat(
-            [st.session_state['divergencias_simuladas'], df_div_novos]).drop_duplicates(subset=['Nota Fiscal'],
-                                                                                        keep='last')
-
+    try:
+        if dados_notas:
+            for nota in dados_notas:
+                supabase.table("bd_expedicao").upsert(nota).execute()
+        if dados_divergencias:
+            for div in dados_divergencias:
+                div_sql = {
+                    "nota_fiscal": div["Nota Fiscal"],
+                    "arquivo_xml": div["Arquivo XML"],
+                    "cliente": div["Cliente"],
+                    "previsao_entrega": div["Previsão Entrega"],
+                    "status_auditoria": div["Status Auditoria"],
+                    "justificativa_motivo": div["Justificativa / Motivo"]
+                }
+                supabase.table("bd_divergencias").upsert(div_sql).execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar dados no Supabase: {e}")
+        return False
 
 def atualizar_status_bipagem(numero_nf, coluna_status, novo_status):
-    df = st.session_state['bd_simulado']
-    if numero_nf in df['numero_nf'].values:
-        df.loc[df['numero_nf'] == numero_nf, coluna_status] = novo_status
-        st.session_state['bd_simulado'] = df
-        return True
-    return False
+    try:
+        resposta = supabase.table("bd_expedicao").update({coluna_status: novo_status}).eq("numero_nf", numero_nf).execute()
+        return len(resposta.data) > 0
+    except Exception as e:
+        st.error(f"Erro ao atualizar status: {e}")
+        return False
 
+# --- CARREGAMENTO DE DADOS INICIAIS ---
+df_principal = carregar_dados_principais()
+df_div = carregar_divergencias()
 
 # --- MENU LATERAL ---
 st.sidebar.title("🚚 Controle de Logística")
@@ -52,10 +90,10 @@ st.sidebar.markdown("---")
 modo_visao = st.sidebar.radio(
     "Selecione o Painel:",
     [
-        "📊 Dashboard Geral",
-        "📤 Bipagem - Saída Expedição",
-        "📥 Bipagem - Retorno Carga",
-        "⚙️ Injeção de Planilhas (Carga)",
+        "📊 Dashboard Geral", 
+        "📤 Bipagem - Saída Expedição", 
+        "📥 Bipagem - Retorno Carga", 
+        "⚙️ Injeção de Planilhas (Carga)", 
         "🚨 Divergências de XML"
     ]
 )
@@ -65,172 +103,151 @@ modo_visao = st.sidebar.radio(
 # ==============================================================================
 if modo_visao == "📊 Dashboard Geral":
     st.title("📊 Painel Central de Controle de Entregas")
-
-    df_principal = st.session_state['bd_simulado']
-
+    
     st.subheader("📈 Indicadores Operacionais da Doca")
     kpi1, kpi2, kpi3 = st.columns(3)
-
+    
     total_notas = len(df_principal)
     financeiro_total = df_principal["valor_nota"].sum() if total_notas > 0 else 0.0
-    total_orfas = len(st.session_state['divergencias_simuladas'])
+    total_orfas = len(df_div)
 
     kpi1.metric("Volume de Notas Ativas", f"{total_notas} NFs")
-    kpi2.metric("Faturamento Roteirizado",
-                f"R$ {financeiro_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    kpi2.metric("Faturamento Roteirizado", f"R$ {financeiro_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
     kpi3.metric("Alertas de Divergência", f"{total_orfas} Ocorrências")
 
     st.markdown("---")
     st.subheader("📋 Visão Consolidada de Notas Cruzadas (XML 🔄 Romaneio)")
-
+    
     if df_principal.empty:
-        st.info("ℹ️ Sistema vazio. Realize a carga dos arquivos na aba de configurações.")
+        st.info("ℹ️ Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
     else:
-        st.dataframe(df_principal, use_container_width=True)
+        st.dataframe(df_principal[[
+            "numero_nf", "romaneio", "motorista", "cliente", "valor_nota", "data_emissao", "previsao_entrega", "status_ida", "status_volta"
+        ]], use_container_width=True)
 
 # ==============================================================================
-# MODO: BIPAGEM - SAÍDA EXPEDIÇÃO (COM IDA PARCIAL E ENVIO DIRETO PARA DIVERGÊNCIAS)
+# MODO: BIPAGEM - SAÍDA EXPEDIÇÃO
 # ==============================================================================
 elif modo_visao == "📤 Bipagem - Saída Expedição":
     st.title("📤 Fluxo de Expedição - Saída de Veículos")
-
-    df_principal = st.session_state['bd_simulado']
-
+    
     if df_principal.empty:
-        st.warning("⚠️ Nenhuma base carregada. Importe o Romaneio primeiro para selecionar as viagens.")
+        st.warning("⚠️ Nenhuma base carregada no Supabase. Importe o Romaneio primeiro na aba de Carga.")
     else:
-        romaneios_disponiveis = df_principal['romaneio'].unique()
+        romaneios_disponiveis = sorted(df_principal['romaneio'].unique())
         romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio para conferência:", romaneios_disponiveis)
-
+        
         df_viagem = df_principal[df_principal['romaneio'] == romaneio_selecionado]
         st.info(f"🚚 Motorista Associado: {df_viagem['motorista'].iloc[0]} | Quantidade de Notas: {len(df_viagem)}")
-
+        
         st.markdown("---")
         col_bip, col_ret = st.columns(2)
-
+        
         with col_bip:
             st.markdown("### 🟢 Bipagem de Fluxo Normal")
-            nf_bipada = st.text_input("Aponte o Leitor (Código de Barras):", key="txt_saida",
-                                      placeholder="Bipa a NF aqui...")
-
+            nf_bipada = st.text_input("Aponte o Leitor (Código de Barras):", key="txt_saida", placeholder="Bipa a NF aqui...")
+            
             if nf_bipada:
                 nf_limpa = str(int(nf_bipada[-9:])) if len(nf_bipada) == 44 else str(int(nf_bipada.strip()))
-
+                
                 if nf_limpa in df_viagem['numero_nf'].values:
-                    atualizar_status_bipagem(nf_limpa, "status_ida", "CONFERIDO / EXPEDIDO")
-                    st.success(f"✅ NF {nf_limpa} liberada para viagem!")
+                    if atualizar_status_bipagem(nf_limpa, "status_ida", "CONFERIDO / EXPEDIDO"):
+                        st.success(f"✅ NF {nf_limpa} liberada para viagem no Supabase!")
+                        st.rerun()
                 else:
                     st.error(f"❌ Erro de Validação: A NF {nf_limpa} NÃO pertence ao Romaneio {romaneio_selecionado}!")
 
         with col_ret:
             st.markdown("### 🔴 Tratamento de Notas Não Enviadas")
-            # Lista apenas as notas que ainda não foram bipadas como OK nesta viagem
-            nf_retida = st.selectbox("Selecione a NF Retida:", ["-"] + list(
-                df_viagem[df_viagem['status_ida'] == "PENDENTE DE BIPAGEM"]['numero_nf'].unique()))
-
-            # ADICIONADO: Opção de "Ida Parcial" incluída nos motivos solicitados
-            motivo_nao_ir = st.selectbox("Motivo da Nota não seguir viagem:",
-                                         ["Falta de material", "Nota não realizada", "Nota perdida", "Ida Parcial"])
-
+            nf_retida = st.selectbox("Selecione a NF Retida:", ["-"] + list(df_viagem[df_viagem['status_ida'] == "PENDENTE DE BIPAGEM"]['numero_nf'].unique()))
+            motivo_nao_ir = st.selectbox("Motivo da Nota não seguir viagem:", ["Falta de material", "Nota não realizada", "Nota perdida", "Ida Parcial"])
+            
             if st.button("Gravar Retenção de Saída") and nf_retida != "-":
-                atualizar_status_bipagem(nf_retida, "status_ida", f"RETIDA: {motivo_nao_ir}")
-
-                # MODIFICAÇÃO: Joga direto com toda a justificativa detalhada no painel de divergências
-                nova_div = {
-                    "Arquivo XML": f"RETENCAO_SAIDA_{nf_retida}.xml",
-                    "Nota Fiscal": nf_retida,
-                    "Cliente": df_viagem[df_viagem['numero_nf'] == nf_retida]['cliente'].iloc[0],
-                    "Previsão Entrega": df_viagem[df_viagem['numero_nf'] == nf_retida]['previsao_entrega'].iloc[0],
-                    "Status Auditoria": f"🚨 EXPEDIÇÃO RECUSADA ({motivo_nao_ir.upper()})",
-                    "Justificativa / Motivo": f"Nota retida na doca de saída por motivo de: {motivo_nao_ir}"
-                }
-                st.session_state['divergencias_simuladas'] = pd.concat([
-                    st.session_state['divergencias_simuladas'], pd.DataFrame([nova_div])
-                ]).drop_duplicates(subset=['Nota Fiscal'], keep='last')
-                st.warning(
-                    f"📌 Alerta: NF {nf_retida} removida do fluxo normal e enviada para análise no Painel de Divergências.")
+                if atualizar_status_bipagem(nf_retida, "status_ida", f"RETIDA: {motivo_nao_ir}"):
+                    # Envia com toda a justificativa direto para as divergências do Supabase
+                    nova_div = [{
+                        "Nota Fiscal": nf_retida,
+                        "Arquivo XML": f"RETENCAO_SAIDA_{nf_retida}.xml",
+                        "Cliente": df_viagem[df_viagem['numero_nf'] == nf_retida]['cliente'].iloc[0],
+                        "Previsão Entrega": df_viagem[df_viagem['numero_nf'] == nf_retida]['previsao_entrega'].iloc[0],
+                        "Status Auditoria": f"🚨 EXPEDIÇÃO RECUSADA ({motivo_nao_ir.upper()})",
+                        "Justificativa / Motivo": f"Nota retida na doca de saída por motivo de: {motivo_nao_ir}"
+                    }]
+                    salvar_dados_consolidados(None, nova_div)
+                    st.warning(f"📌 Alerta: NF {nf_retida} gravada como Retida no Supabase.")
+                    st.rerun()
 
         st.markdown("---")
         st.subheader("📋 Grid de Conferência da Viagem")
-        st.dataframe(
-            st.session_state['bd_simulado'][st.session_state['bd_simulado']['romaneio'] == romaneio_selecionado][
-                ["numero_nf", "cliente", "valor_nota", "status_ida"]], use_container_width=True)
+        st.dataframe(df_viagem[["numero_nf", "cliente", "valor_nota", "status_ida"]], use_container_width=True)
 
 # ==============================================================================
 # MODO: BIPAGEM - RETORNO CARGA
 # ==============================================================================
 elif modo_visao == "📥 Bipagem - Retorno Carga":
     st.title("📥 Prestação de Contas - Retorno de Motoristas")
-
-    df_principal = st.session_state['bd_simulado']
-
+    
     if df_principal.empty:
-        st.warning("⚠️ Nenhuma base ativa no sistema.")
+        st.warning("⚠️ Nenhuma base carregada no Supabase.")
     else:
-        romaneios_disponiveis = df_principal['romaneio'].unique()
-        romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio que está retornando:", romaneios_disponiveis,
-                                            key="rom_ret")
-
+        romaneios_disponiveis = sorted(df_principal['romaneio'].unique())
+        romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio que está retornando:", romaneios_disponiveis, key="rom_ret")
+        
         df_viagem = df_principal[df_principal['romaneio'] == romaneio_selecionado]
         st.info(f"🚚 Motorista: {df_viagem['motorista'].iloc[0]} | Notas do Romaneio: {len(df_viagem)}")
-
+        
         st.markdown("---")
         col_baixa, col_dev = st.columns(2)
-
+        
         with col_baixa:
             st.markdown("### 🟢 Baixa de Canhotos (Entregues)")
-            nf_bipada_ret = st.text_input("Aponte o Leitor (Canhoto):", key="txt_retorno",
-                                          placeholder="Bipa o canhoto...")
-
+            nf_bipada_ret = st.text_input("Aponte o Leitor (Canhoto):", key="txt_retorno", placeholder="Bipa o canhoto...")
+            
             if nf_bipada_ret:
                 nf_limpa = str(int(nf_bipada_ret[-9:])) if len(nf_bipada_ret) == 44 else str(int(nf_bipada_ret.strip()))
-
+                
                 if nf_limpa in df_viagem['numero_nf'].values:
-                    atualizar_status_bipagem(nf_limpa, "status_volta", "ENTREGUE / CANHOTO OK")
-                    st.success(f"✅ Baixa confirmada para a NF {nf_limpa}!")
+                    if atualizar_status_bipagem(nf_limpa, "status_volta", "ENTREGUE / CANHOTO OK"):
+                        st.success(f"✅ Baixa confirmada para a NF {nf_limpa} no banco de dados!")
+                        st.rerun()
                 else:
                     st.error(f"❌ Erro de Roteiro: NF {nf_limpa} não pertence a esta viagem!")
 
         with col_dev:
             st.markdown("### 🔴 Registro de Ocorrências / Não Retorno")
-            nf_problema = st.selectbox("Selecione a NF com Ocorrência:", ["-"] + list(
-                df_viagem[df_viagem['status_volta'] == "EM AGUARDO"]['numero_nf'].unique()))
+            nf_problema = st.selectbox("Selecione a NF com Ocorrência:", ["-"] + list(df_viagem[df_viagem['status_volta'] == "EM AGUARDO"]['numero_nf'].unique()))
             motivo_nao_retorno = st.selectbox("Motivo do Não Retorno do Canhoto:", [
-                "🚨 DEVOLUÇÃO TOTAL",
-                "❌ RECUSADO PELO CLIENTE",
-                "🔄 REENTREGA SOLICITADA",
+                "🚨 DEVOLUÇÃO TOTAL", 
+                "❌ RECUSADO PELO CLIENTE", 
+                "🔄 REENTREGA SOLICITADA", 
                 "🔍 CANHOTO EM ANÁLISE"
             ])
-
+            
             if st.button("Registrar Ocorrência") and nf_problema != "-":
-                atualizar_status_bipagem(nf_problema, "status_volta", motivo_nao_retorno)
-
-                # MODIFICAÇÃO: Joga a ocorrência detalhada direto no painel de divergências
-                nova_div_ret = {
-                    "Arquivo XML": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
-                    "Nota Fiscal": nf_problema,
-                    "Cliente": df_viagem[df_viagem['numero_nf'] == nf_problema]['cliente'].iloc[0],
-                    "Previsão Entrega": df_viagem[df_viagem['numero_nf'] == nf_problema]['previsao_entrega'].iloc[0],
-                    "Status Auditoria": f"🚨 RETORNO COM ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
-                    "Justificativa / Motivo": f"Problema relatado no retorno do motorista: {motivo_nao_retorno}"
-                }
-                st.session_state['divergencias_simuladas'] = pd.concat([
-                    st.session_state['divergencias_simuladas'], pd.DataFrame([nova_div_ret])
-                ]).drop_duplicates(subset=['Nota Fiscal'], keep='last')
-                st.error(f"📌 Ocorrência enviada para a central de auditoria na aba de Divergências.")
+                if atualizar_status_bipagem(nf_problema, "status_volta", motivo_nao_retorno):
+                    # Envia a ocorrência detalhada direto para a auditoria no Supabase
+                    nova_div_ret = [{
+                        "Nota Fiscal": nf_problema,
+                        "Arquivo XML": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
+                        "Cliente": df_viagem[df_viagem['numero_nf'] == nf_problema]['cliente'].iloc[0],
+                        "Previsão Entrega": df_viagem[df_viagem['numero_nf'] == nf_problema]['previsao_entrega'].iloc[0],
+                        "Status Auditoria": f"🚨 RETORNO COM ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
+                        "Justificativa / Motivo": f"Problema relatado no retorno do motorista: {motivo_nao_retorno}"
+                    }]
+                    salvar_dados_consolidados(None, nova_div_ret)
+                    st.error(f"📌 Ocorrência gravada na auditoria do Supabase para a NF {nf_problema}.")
+                    st.rerun()
 
         st.markdown("---")
         st.subheader("📋 Controle de Entrega Física da Viagem")
-        st.dataframe(
-            st.session_state['bd_simulado'][st.session_state['bd_simulado']['romaneio'] == romaneio_selecionado][
-                ["numero_nf", "cliente", "status_ida", "status_volta"]], use_container_width=True)
+        st.dataframe(df_viagem[["numero_nf", "cliente", "status_ida", "status_volta"]], use_container_width=True)
 
 # ==============================================================================
-# MODO: INJEÇÃO DE PLANILHAS
+# MODO: INJEÇÃO DE PLANILHAS (CARGA REAL NO BANCO)
 # ==============================================================================
 elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
     st.title("⚙️ Painel de Carga e Cruzamento de Dados")
-    st.subheader("Alimente o sistema realizando a conferência automática")
+    st.subheader("Alimente e sincronize a base de dados do Supabase")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -238,18 +255,18 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
     with col2:
         xml_files = st.file_uploader("2. Selecionar Arquivos XML", type=["xml"], accept_multiple_files=True)
 
-    if st.button("🚀 Processar e Validar Dados", use_container_width=True):
+    if st.button("🚀 Processar e Sincronizar com Supabase", use_container_width=True):
         if not romaneio_file or not xml_files:
-            st.error("❌ Carregue ambos os arquivos para executar a amarração.")
+            st.error("❌ Carregue ambos os arquivos para executar o processamento.")
         else:
-            with st.spinner("⏳ Rodando validação e cruzamento logístico..."):
+            with st.spinner("⏳ Processando e gravando dados na nuvem..."):
                 try:
                     nfs_romaneios = {}
                     romaneio_atual = "-"
                     motorista_atual = "-"
-
+                    
                     conteudo_csv = romaneio_file.getvalue().decode("utf-8", errors="ignore").splitlines()
-
+                    
                     for linha in conteudo_csv:
                         linha_limpa = linha.strip()
                         if not linha_limpa: continue
@@ -267,8 +284,7 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                 nfs_romaneios[num_nf_limpo] = {
                                     "romaneio": romaneio_atual,
                                     "motorista": motorista_atual,
-                                    "valor": float(colunas[8].replace(",", ".")) if len(colunas) > 8 and colunas[
-                                        8].replace(",", ".").replace(".", "").isdigit() else 0.0
+                                    "valor": float(colunas[8].replace(",", ".")) if len(colunas) > 8 and colunas[8].replace(",", ".").replace(".", "").isdigit() else 0.0
                                 }
 
                     lista_divergencias = []
@@ -288,7 +304,7 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                             nf_limpa = str(int(num_nf_xml.text.strip()))
                             nome_cliente = cliente_xml.text.strip() if cliente_xml is not None else "Não Identificado"
                             valor_nota = float(vNF_xml.text) if vNF_xml is not None else 0.0
-
+                            
                             data_previsao_xml = "-"
                             data_emissao_str = "-"
                             if dhEmi_xml is not None and dhEmi_xml.text:
@@ -297,8 +313,7 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                     data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
                                     data_emissao_str = data_obj.strftime("%d/%m/%Y")
                                     data_previsao_xml = (data_obj + timedelta(days=2)).strftime("%d/%m/%Y")
-                                except:
-                                    pass
+                                except: pass
 
                             if nf_limpa in nfs_romaneios:
                                 notas_validadas.append({
@@ -318,30 +333,27 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                     "Nota Fiscal": nf_limpa,
                                     "Cliente": nome_cliente,
                                     "Previsão Entrega": data_previsao_xml,
-                                    "Status Auditoria": "🚨 FORA DO ROMANEIO (OÓRFÃ)",
+                                    "Status Auditoria": "🚨 FORA DO ROMANEIO (ÓRFÃ)",
                                     "Justificativa / Motivo": "🗺️ Erro de Roteirização (Faturado sem Viagem)"
                                 })
 
-                    salvar_dados_consolidados(notas_validadas, lista_divergencias)
-                    st.success(
-                        f"📊 Banco alimentado com {len(notas_validadas)} Notas e {len(lista_divergencias)} Divergências fiscais encontradas.")
+                    if salvar_dados_consolidados(notas_validadas, lista_divergencias):
+                        st.success(f"📊 Sucesso! {len(notas_validadas)} Notas e {len(lista_divergencias)} Divergências integradas ao Supabase.")
+                        st.rerun()
                 except Exception as e:
-                    st.error(f"⚠️ Erro estrutural: {e}")
+                    st.error(f"⚠️ Erro ao salvar dados no banco de dados: {e}")
 
 # ==============================================================================
-# MODO: DIVERGÊNCIAS DE XML (CENTRALIZANDO TODAS AS JUSTIFICATIVAS DO SISTEMA)
+# MODO: DIVERGÊNCIAS DE XML (LENDO DIRETAMENTE DO SUPABASE)
 # ==============================================================================
 elif modo_visao == "🚨 Divergências de XML":
     st.title("🚨 Central Única de Auditoria e Divergências")
-    st.subheader(
-        "Todas as ocorrências registradas na Saída, no Retorno ou erros de Roteirização concentrados para análise")
-
-    df_div = st.session_state['divergencias_simuladas']
+    st.subheader("Todas as inconsistências de faturamento, ocorrências de retorno e notas retidas")
 
     if df_div.empty:
-        st.success("✅ Excelente! Nenhuma divergência operacional ou nota retida na base até o momento.")
+        st.success("✅ Tudo limpo! Nenhuma divergência operacional ou nota retida ativa no banco de dados.")
     else:
-        st.warning(f"Atenção: Constam {len(df_div)} registros pendentes de tratativa ou justificativa fiscal.")
+        st.warning(f"Atenção: Existem {len(df_div)} ocorrências ativas exigindo tratativa da supervisão.")
         st.dataframe(df_div[[
             "Arquivo XML", "Nota Fiscal", "Cliente", "Previsão Entrega", "Status Auditoria", "Justificativa / Motivo"
         ]], use_container_width=True)
