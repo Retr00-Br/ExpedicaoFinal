@@ -56,7 +56,6 @@ def salvar_dados_consolidados(dados_notas, dados_divergencias):
     try:
         if dados_notas:
             for nota in dados_notas:
-                # Usa upsert baseado na constraint unique do numero_nf
                 supabase.table("tb_expedicao").upsert(nota, on_conflict="numero_nf").execute()
         if dados_divergencias:
             for div in dados_divergencias:
@@ -131,72 +130,47 @@ if modo_visao == "📊 Dashboard Geral":
 # MODO: BIPAGEM - SAÍDA EXPEDIÇÃO
 # ==============================================================================
 elif modo_visao == "📤 Bipagem - Saída Expedição":
-    st.title("📤 Controle de Portaria - Saída de Veículos")
+    st.title("📤 Controle de Fluxo - Saída da Doca")
     
     if df_principal.empty:
-        st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
+        st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga para liberar a expedição.")
     else:
-        # Garante a remoção de valores nulos ou vazios reais na coluna 'romaneio'
         df_limpo = df_principal.dropna(subset=["romaneio"])
         valores_originais = df_limpo["romaneio"].astype(str).str.strip().unique()
         valores_filtrados = [r for r in valores_originais if r not in ["nan", "None", "", "null", "-", "None "]]
-            
+        
         if len(valores_filtrados) == 0:
-            st.info("💡 Nenhum romaneio válido encontrado na coluna 'romaneio' do banco de dados.")
-            df_viagem = pd.DataFrame()
+            st.info("💡 Nenhum romaneio ativo aguardando liberação.")
         else:
-            romaneios_disponiveis_ida = sorted(valores_filtrados)
-            romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio para conferência:", romaneios_disponiveis_ida, key="rom_ida")
+            romaneios_disponiveis = sorted(valores_filtrados)
+            romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio para Carregamento:", romaneios_disponiveis, key="rom_saida")
             df_viagem = df_principal[df_principal["romaneio"].astype(str).str.strip() == romaneio_selecionado]
             
-        if not df_viagem.empty:
-            nome_motorista = df_viagem["motorista"].iloc[0] if "motorista" in df_viagem.columns and pd.notna(df_viagem["motorista"].iloc[0]) else "Não Informado"
-            
-            st.info(f"🚚 Motorista Associado: {nome_motorista} | Quantidade de Notas: {len(df_viagem)}")
-            
-            st.markdown("---")
-            col1, col2 = st.columns([2, 1])
-            
-            with col1:
-                st.markdown("### 🔍 Leitura de Chaves de Acesso (XML)")
-                nf_bipada = st.text_input("Aponte o Leitor de Código de Barras:", key="txt_bipagem", placeholder="Bipa a chave de 44 dígitos...")
+            if not df_viagem.empty:
+                nome_motorista = df_viagem["motorista"].iloc[0] if "motorista" in df_viagem.columns and pd.notna(df_viagem["motorista"].iloc[0]) else "Não Informado"
+                st.info(f"🚚 Motorista Escalado: {nome_motorista} | Total de Notas: {len(df_viagem)}")
                 
-                if nf_bipada:
-                    nf_limpa = str(int(nf_bipada[-9:])) if len(nf_bipada) == 44 else str(int(nf_bipada.strip()))
+                st.markdown("---")
+                st.markdown("### 🔍 Validação de Saída Física")
+                nf_bipada_saida = st.text_input("Aponte o Leitor para o Código de Barras (Saída):", key="txt_saida", placeholder="Bipa a nota fiscal...")
+                
+                if nf_bipada_saida:
+                    if len(nf_bipada_saida.strip()) == 44:
+                        nf_limpa = str(int(nf_bipada_saida.strip()[25:34]))
+                    else:
+                        nf_limpa = str(int(nf_bipada_saida.strip()))
                     
                     if nf_limpa in df_viagem["numero_nf"].astype(str).values:
-                        if atualizar_status_bipagem(nf_limpa, "status_ida", "PROCESSO DE EMBARQUE OK"):
-                            st.success(f"✅ NF {nf_limpa} validada e carregada no veículo com sucesso!")
+                        if atualizar_status_bipagem(nf_limpa, "status_ida", "CONFERIDO NA DOCA / EM TRÂNSITO"):
+                            st.success(f"✅ NF {nf_limpa} liberada e embarcada com sucesso!")
                             st.rerun()
                     else:
-                        st.error(f"❌ Alerta de Desvio! A NF {nf_limpa} NÃO pertence a esta viagem!")
-            
-            with col2:
-                st.markdown("### 📊 Status da Carga")
-                total_notas = len(df_viagem)
-                notas_ok = len(df_viagem[df_viagem['status_ida'] == "PROCESSO DE EMBARQUE OK"]) if 'status_ida' in df_viagem.columns else 0
-                notas_em_aguardo = total_notas - notas_ok
+                        st.error(f"❌ Erro de Carregamento: NF {nf_limpa} não faz parte deste romaneio!")
                 
-                st.metric("Notas Roteirizadas", total_notas)
-                st.metric("✅ Bipadas/Embarcadas", notas_ok)
-                st.metric("⏳ Aguardando Bipagem", notas_em_aguardo)
-            
-            st.markdown("---")
-            st.subheader("📋 Grid de Conferência da Viagem")
-            st.dataframe(df_viagem, use_container_width=True)
+                st.markdown("---")
+                st.subheader("📋 Notas Vinculadas a esta Viagem")
+                st.dataframe(df_viagem, use_container_width=True)
 
-Perfeito, agora vendo a estrutura completa desses dois blocos específicos do seu código atual, fica fácil ajustar com exatidão onde o leitor realiza a extração.
-
-No código que você enviou, a extração da NF do leitor na aba Retorno Carga ainda está assim:
-
-Python
-nf_limpa = str(int(nf_bipada_ret[-9:])) if len(nf_bipada_ret) == 44 else str(int(nf_bipada_ret.strip()))
-Como vimos, buscar os últimos 9 dígitos pega o dígito verificador final da chave e quebra o cruzamento com o banco de dados.
-
-Aqui está o script corrigido para os dois blocos, já implementando a captura exata das posições 25 a 33 da chave de acesso (onde fica o número real da NF-e) e corrigindo um pequeno detalhe na linha linha_limpa = float_v = linha.strip() do bloco de Injeção que continha uma atribuição duplicada desnecessária.
-
-Substitua os dois blocos no seu código por este arquivo atualizado:
-Python
 # ==============================================================================
 # MODO: BIPAGEM - RETORNO CARGA
 # ==============================================================================
@@ -206,7 +180,6 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
     if df_principal.empty:
         st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
     else:
-        # Garante a remoção de valores nulos ou vazios reais na coluna 'romaneio'
         df_limpo = df_principal.dropna(subset=["romaneio"])
         valores_originais = df_limpo["romaneio"].astype(str).str.strip().unique()
         valores_filtrados = [r for r in valores_originais if r not in ["nan", "None", "", "null", "-", "None "]]
@@ -232,7 +205,6 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                 nf_bipada_ret = st.text_input("Aponte o Leitor (Canhoto):", key="txt_retorno", placeholder="Bipa o canhoto...")
                 
                 if nf_bipada_ret:
-                    # EXTRAÇÃO CORRIGIDA: Pega da posição 25 a 33 se for chave de 44 dígitos
                     if len(nf_bipada_ret.strip()) == 44:
                         nf_limpa = str(int(nf_bipada_ret.strip()[25:34]))
                     else:
@@ -268,7 +240,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                             "Arquivo XML": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
                             "Cliente": nome_cliente,
                             "Previsão Entrega": str(data_prev),
-                            "Status Auditoria": f"🚨 RETORNO WITH ERROR ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
+                            "Status Auditoria": f"🚨 RETORNO COM ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
                             "Justificativa / Motivo": f"Problema relatado no retorno do motorista: {motivo_nao_retorno}"
                         }]
                         salvar_dados_consolidados(None, nova_div_ret)
@@ -309,7 +281,6 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                         if not linha_limpa:
                             continue
                         
-                        # Preserva os espaços em branco entre os ';' para não perder a contagem das colunas
                         colunas = [c.strip() for c in linha.split(";")]
                         
                         # 1. CAPTURA DO CABEÇALHO DO ROMANEIO
@@ -318,24 +289,20 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                             if partes_rom[0].strip().isdigit():
                                 romaneio_atual = partes_rom[0].strip()
                             
-                            # Condutor/Motorista fica exatamente na 5ª coluna (índice 4)
                             if len(colunas) > 4 and colunas[4]:
                                 motorista_atual = colunas[4]
                             continue
                         
-                        # Ignora linhas de cabeçalho descritivo
                         if "Nr. Romaneio" in colunas[0] or "Filial" in colunas[0]:
                             continue
                         
-                        # 2. CAPTURA DAS NOTAS FISCAIS (Baseado na estrutura de índices reais do arquivo)
+                        # 2. CAPTURA DAS NOTAS FISCAIS
                         if len(colunas) >= 12:
-                            num_nf_raw = colunas[10].strip()   # Num.NF fica no índice 10
-                            valor_raw = colunas[11].strip()    # Vl.NF fica no índice 11
+                            num_nf_raw = colunas[10].strip()
+                            valor_raw = colunas[11].strip()
                             
                             if num_nf_raw.isdigit() and num_nf_raw != "0":
                                 num_nf_limpo = str(int(num_nf_raw))
-                                
-                                # Tratamento do valor padrão brasileiro (R$ 3.270,50 -> 3270.50)
                                 valor_limpo = valor_raw.replace("R$", "").replace(".", "").replace(",", ".").strip()
                                 try:
                                     valor_estimado = float(valor_limpo)
@@ -405,7 +372,7 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                         st.rerun()
                 except Exception as e:
                     st.error(f"⚠️ Erro crítico no processamento: {e}")
-                    
+
 # ==============================================================================
 # MODO: DIVERGÊNCIAS DE XML (LENDO DIRETAMENTE DO SUPABASE)
 # ==============================================================================
