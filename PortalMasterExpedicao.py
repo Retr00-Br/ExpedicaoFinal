@@ -22,6 +22,31 @@ def iniciar_conexao_supabase() -> Client:
 
 supabase = iniciar_conexao_supabase()
 
+# --- FUNÇÃO DE ENGENHARIA DEFENSIVA (SANATIZAÇÃO DE ENTRADA DO LEITOR) ---
+def extrair_nf_da_bipagem(input_bipado: str) -> str:
+    """
+    Melhoria de Robustez: Limpa qualquer impureza da string (NFe, \r, \n, espaços)
+    e extrai o número correto da NF sem quebrar a estrutura do fatiamento.
+    """
+    if not input_bipado:
+        return ""
+    
+    # Remove prefixos e limpa quebras de linha/espaços ocultos nas pontas (\r, \n, \t)
+    texto_limpo = input_bipado.strip().replace("NFe", "")
+    
+    # Mantém estritamente apenas números (remove qualquer lixo ou caractere de controle do leitor)
+    texto_limpo = re.sub(r'\D', '', texto_limpo)
+    
+    # Se for uma chave de acesso completa de 44 dígitos, aplica o fatiamento seguro
+    if len(texto_limpo) == 44:
+        return str(int(texto_limpo[25:34]))
+    
+    # Se o leitor já mandar apenas o número puro ou parcial
+    if texto_limpo.isdigit() and texto_limpo != "0":
+        return str(int(texto_limpo))
+        
+    return ""
+
 # --- FUNÇÕES DE INTERAÇÃO COM O BANCO ---
 def carregar_dados_principais():
     try:
@@ -75,7 +100,9 @@ def salvar_dados_consolidados(dados_notas, dados_divergencias):
 
 def atualizar_status_bipagem(numero_nf, coluna_status, novo_status):
     try:
-        resposta = supabase.table("tb_expedicao").update({coluna_status: novo_status}).eq("numero_nf", numero_nf).execute()
+        # Melhoria: Garante que a busca no banco ignore zeros à esquerda ou espaços no ID
+        nf_sanitizada = str(int(str(numero_nf).strip()))
+        resposta = supabase.table("tb_expedicao").update({coluna_status: novo_status}).eq("numero_nf", nf_sanitizada).execute()
         return len(resposta.data) > 0
     except Exception as e:
         st.error(f"Erro ao atualizar status: {e}")
@@ -155,17 +182,15 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                 nf_bipada_saida = st.text_input("Aponte o Leitor para o Código de Barras (Saída):", key="txt_saida", placeholder="Bipa a nota fiscal...")
                 
                 if nf_bipada_saida:
-                    if len(nf_bipada_saida.strip()) == 44:
-                        nf_limpa = str(int(nf_bipada_saida.strip()[25:34]))
-                    else:
-                        nf_limpa = str(int(nf_bipada_saida.strip()))
+                    # Melhoria: Processa o input tratando variações do leitor de código de barras
+                    nf_limpa = extrair_nf_da_bipagem(nf_bipada_saida)
                     
-                    if nf_limpa in df_viagem["numero_nf"].astype(str).values:
+                    if nf_limpa and nf_limpa in df_viagem["numero_nf"].astype(str).values:
                         if atualizar_status_bipagem(nf_limpa, "status_ida", "CONFERIDO NA DOCA / EM TRÂNSITO"):
                             st.success(f"✅ NF {nf_limpa} liberada e embarcada com sucesso!")
                             st.rerun()
                     else:
-                        st.error(f"❌ Erro de Carregamento: NF {nf_limpa} não faz parte deste romaneio!")
+                        st.error(f"❌ Erro de Carregamento: O código lido não corresponde a nenhuma NF pendente deste romaneio!")
                 
                 st.markdown("---")
                 st.subheader("📋 Notas Vinculadas a esta Viagem")
@@ -205,17 +230,15 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                 nf_bipada_ret = st.text_input("Aponte o Leitor (Canhoto):", key="txt_retorno", placeholder="Bipa o canhoto...")
                 
                 if nf_bipada_ret:
-                    if len(nf_bipada_ret.strip()) == 44:
-                        nf_limpa = str(int(nf_bipada_ret.strip()[25:34]))
-                    else:
-                        nf_limpa = str(int(nf_bipada_ret.strip()))
+                    # Melhoria: Processa o input tratando variações do leitor de código de barras
+                    nf_limpa = extrair_nf_da_bipagem(nf_bipada_ret)
                     
-                    if nf_limpa in df_viagem["numero_nf"].astype(str).values:
+                    if nf_limpa and nf_limpa in df_viagem["numero_nf"].astype(str).values:
                         if atualizar_status_bipagem(nf_limpa, "status_volta", "ENTREGUE / CANHOTO OK"):
                             st.success(f"✅ Baixa confirmada para a NF {nf_limpa} no banco de dados!")
                             st.rerun()
                     else:
-                        st.error(f"❌ Erro de Roteiro: NF {nf_limpa} não pertence a esta viagem!")
+                        st.error(f"❌ Erro de Roteiro: O código lido não pertence a esta viagem!")
 
             with col_dev:
                 st.markdown("### 🔴 Registro de Ocorrências / Não Retorno")
@@ -316,7 +339,7 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                 }
 
                     lista_divergencias = []
-                    notas_validadas = []
+                    notes_validadas = []
 
                     # 3. CRUZAMENTO COM OS ARQUIVOS XML
                     for xml_file in xml_files:
@@ -346,7 +369,7 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                     pass
 
                             if nf_limpa in nfs_romaneios:
-                                notas_validadas.append({
+                                notes_validadas.append({
                                     "numero_nf": nf_limpa,
                                     "romaneio": nfs_romaneios[nf_limpa]["romaneio"],
                                     "motorista": nfs_romaneios[nf_limpa]["motorista"],
@@ -367,8 +390,8 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                     "Justificativa / Motivo": "🗺️ Erro de Roteirização (Faturado sem Viagem)"
                                 })
 
-                    if salvar_dados_consolidados(notas_validadas, lista_divergencias):
-                        st.success(f"📊 Sucesso! {len(notas_validadas)} Notas e {len(lista_divergencias)} Divergências processadas.")
+                    if salvar_dados_consolidados(notes_validadas, lista_divergencias):
+                        st.success(f"📊 Sucesso! {len(notes_validadas)} Notas e {len(lista_divergencias)} Divergências processadas.")
                         st.rerun()
                 except Exception as e:
                     st.error(f"⚠️ Erro crítico no processamento: {e}")
