@@ -4,6 +4,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from supabase import create_client, Client
+import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -24,11 +25,9 @@ supabase = iniciar_conexao_supabase()
 # --- FUNÇÕES DE INTERAÇÃO COM O BANCO ---
 def carregar_dados_principais():
     try:
-        # Garante a busca correta dos dados
         resposta = supabase.table("bd_expedicao").select("*").execute()
         if resposta.data and len(resposta.data) > 0:
             return pd.DataFrame(resposta.data)
-        # Se retornar uma lista vazia, monta a estrutura padrão vazia
         return pd.DataFrame(columns=["numero_nf", "romaneio", "motorista", "cliente", "valor_nota", "data_emissao", "previsao_entrega", "status_ida", "status_volta"])
     except Exception as e:
         st.sidebar.error(f"⚠️ Erro ao ler Expedição: {e}")
@@ -136,21 +135,18 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
     if df_principal.empty:
         st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
     else:
-        # --- MOTOR DE BUSCA INTELIGENTE ---
         coluna_romaneio = [col for col in df_principal.columns if "romaneio" in col.lower()]
         
         if coluna_romaneio:
             col_nome = coluna_romaneio[0]
             valores_originais = df_principal[col_nome].astype(str).str.strip().unique()
-            valores_filtrados = [r for r in valores_originais if r and r not in ["nan", "None", "", "null"]]
+            valores_filtrados = [r for r in valores_originais if r and r not in ["nan", "None", "", "null", "-"]]
         else:
             valores_filtrados = []
             
         if len(valores_filtrados) == 0:
-            romaneios_disponiveis_ida = ["Carga Consolidada Ativa"]
-            romaneio_selecionado = romaneios_disponiveis_ida[0]
-            st.info("💡 Coluna de Romaneio padrão não identificada. Exibindo carga unificada para conferência.")
-            df_viagem = df_principal.copy()
+            st.info("💡 Nenhum romaneio válido estruturado encontrado no banco de dados.")
+            df_viagem = pd.DataFrame()
         else:
             romaneios_disponiveis_ida = sorted(valores_filtrados)
             romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio para conferência:", romaneios_disponiveis_ida, key="rom_ida")
@@ -203,21 +199,18 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
     if df_principal.empty:
         st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
     else:
-        # --- MOTOR DE BUSCA INTELIGENTE DA VOLTA ---
         coluna_romaneio = [col for col in df_principal.columns if "romaneio" in col.lower()]
         
         if coluna_romaneio:
             col_nome = coluna_romaneio[0]
             valores_originais = df_principal[col_nome].astype(str).str.strip().unique()
-            valores_filtrados = [r for r in valores_originais if r and r not in ["nan", "None", "", "null"]]
+            valores_filtrados = [r for r in valores_originais if r and r not in ["nan", "None", "", "null", "-"]]
         else:
             valores_filtrados = []
             
         if len(valores_filtrados) == 0:
-            romaneios_disponiveis_ret = ["Carga Consolidada Ativa"]
-            romaneio_selecionado = romaneios_disponiveis_ret[0]
-            st.info("💡 Coluna de Romaneio padrão não identificada. Exibindo carga unificada para retorno.")
-            df_viagem = df_principal.copy()
+            st.info("💡 Nenhum romaneio válido estruturado encontrado no banco de dados.")
+            df_viagem = pd.DataFrame()
         else:
             romaneios_disponiveis_ret = sorted(valores_filtrados)
             romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio que está retornando:", romaneios_disponiveis_ret, key="rom_ret")
@@ -275,7 +268,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                             "Arquivo XML": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
                             "Cliente": nome_cliente,
                             "Previsão Entrega": str(data_prev),
-                            "Status Auditoria": f"🚨 RETORNO COM ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
+                            "Status Auditoria": f"🚨 RETORNO WITH ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
                             "Justificativa / Motivo": f"Problema relatado no retorno do motorista: {motivo_nao_retorno}"
                         }]
                         salvar_dados_consolidados(None, nova_div_ret)
@@ -313,23 +306,47 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                     
                     for linha in conteudo_csv:
                         linha_limpa = linha.strip()
-                        if not linha_limpa: continue
-                        colunas = linha_limpa.split(";")
-
-                        if colunas[0] != "" and " - " in colunas[0]:
-                            romaneio_atual = colunas[0].split("-")[0].strip()
-                            motorista_atual = colunas[4].strip() if len(colunas) > 4 else "-"
+                        if not linha_limpa: 
+                            continue
+                        
+                        # --- DETECTOR INTELIGENTE DE CABEÇALHO DE VIAGEM ---
+                        # Procura padrões dinâmicos como "ROMANEIO: XXXXX" e "MOTORISTA: YYYYY"
+                        if "ROMANEIO" in linha_limpa.upper():
+                            # Extração via regex do número do romaneio
+                            match_rom = re.search(r'(?:ROMANEIO\s*:\s*)(\w+)', linha_limpa, re.IGNORECASE)
+                            if match_rom:
+                                romaneio_atual = match_rom.group(1).strip()
+                            
+                            # Extração via regex do nome do motorista
+                            match_mot = re.search(r'(?:MOTORISTA\s*:\s*)([^|;\n]+)', linha_limpa, re.IGNORECASE)
+                            if match_mot:
+                                motorista_atual = match_mot.group(1).strip()
                             continue
 
-                        if len(colunas) >= 11:
-                            num_nf_raw = colunas[10].strip()
-                            if num_nf_raw and num_nf_raw.isdigit() and num_nf_raw != "Num.NF":
-                                num_nf_limpo = str(int(num_nf_raw))
-                                nfs_romaneios[num_nf_limpo] = {
-                                    "romaneio": romaneio_atual,
-                                    "motorista": motorista_atual,
-                                    "valor": float(colunas[8].replace(",", ".")) if len(colunas) > 8 and colunas[8].replace(",", ".").replace(".", "").isdigit() else 0.0
-                                }
+                        colunas = linha_limpa.split(";")
+                        
+                        # Ajuste para ler as notas fiscais do detalhe da lista
+                        if len(colunas) >= 2:
+                            # Tenta localizar de forma dinâmica uma coluna numérica que represente a NF
+                            for col_val in colunas:
+                                col_val_clean = col_val.strip()
+                                if col_val_clean.isdigit() and len(col_val_clean) <= 9 and col_val_clean != "0":
+                                    num_nf_limpo = str(int(col_val_clean))
+                                    
+                                    # Captura valor se disponível em colunas adjacentes, senão define 0.0
+                                    valor_estimado = 0.0
+                                    for c in colunas:
+                                        c_limpo = c.replace(",", ".").strip()
+                                        if c_limpo.replace(".", "", 1).isdigit() and "." in c_limpo and c_limpo != col_val_clean:
+                                            valor_estimado = float(c_limpo)
+                                            break
+                                            
+                                    nfs_romaneios[num_nf_limpo] = {
+                                        "romaneio": romaneio_atual,
+                                        "motorista": motorista_atual,
+                                        "valor": valor_estimado
+                                    }
+                                    break
 
                     lista_divergencias = []
                     notas_validadas = []
@@ -357,7 +374,8 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                     data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
                                     data_emissao_str = data_obj.strftime("%d/%m/%Y")
                                     data_previsao_xml = (data_obj + timedelta(days=2)).strftime("%d/%m/%Y")
-                                except: pass
+                                except: 
+                                    pass
 
                             if nf_limpa in nfs_romaneios:
                                 notas_validadas.append({
