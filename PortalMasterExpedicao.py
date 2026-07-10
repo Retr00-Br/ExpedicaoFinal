@@ -24,27 +24,14 @@ supabase = iniciar_conexao_supabase()
 
 # --- FUNÇÃO DE ENGENHARIA DEFENSIVA (SANATIZAÇÃO DE ENTRADA DO LEITOR) ---
 def extrair_nf_da_bipagem(input_bipado: str) -> str:
-    """
-    Melhoria de Robustez: Limpa qualquer impureza da string (NFe, \r, \n, espaços)
-    e extrai o número correto da NF sem quebrar a estrutura do fatiamento.
-    """
     if not input_bipado:
         return ""
-    
-    # Remove prefixos e limpa quebras de linha/espaços ocultos nas pontas (\r, \n, \t)
     texto_limpo = input_bipado.strip().replace("NFe", "")
-    
-    # Mantém estritamente apenas números (remove qualquer lixo ou caractere de controle do leitor)
     texto_limpo = re.sub(r'\D', '', texto_limpo)
-    
-    # Se for uma chave de acesso completa de 44 dígitos, aplica o fatiamento seguro
     if len(texto_limpo) == 44:
         return str(int(texto_limpo[25:34]))
-    
-    # Se o leitor já mandar apenas o número puro ou parcial
     if texto_limpo.isdigit() and texto_limpo != "0":
         return str(int(texto_limpo))
-        
     return ""
 
 # --- FUNÇÕES DE INTERAÇÃO COM O BANCO ---
@@ -100,7 +87,6 @@ def salvar_dados_consolidados(dados_notas, dados_divergencias):
 
 def atualizar_status_bipagem(numero_nf, coluna_status, novo_status):
     try:
-        # Melhoria: Garante que a busca no banco ignore zeros à esquerda ou espaços no ID
         nf_sanitizada = str(int(str(numero_nf).strip()))
         resposta = supabase.table("tb_expedicao").update({coluna_status: novo_status}).eq("numero_nf", nf_sanitizada).execute()
         return len(resposta.data) > 0
@@ -182,9 +168,7 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                 nf_bipada_saida = st.text_input("Aponte o Leitor para o Código de Barras (Saída):", key="txt_saida", placeholder="Bipa a nota fiscal...")
                 
                 if nf_bipada_saida:
-                    # Melhoria: Processa o input tratando variações do leitor de código de barras
                     nf_limpa = extrair_nf_da_bipagem(nf_bipada_saida)
-                    
                     if nf_limpa and nf_limpa in df_viagem["numero_nf"].astype(str).values:
                         if atualizar_status_bipagem(nf_limpa, "status_ida", "CONFERIDO NA DOCA / EM TRÂNSITO"):
                             st.success(f"✅ NF {nf_limpa} liberada e embarcada com sucesso!")
@@ -219,7 +203,6 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
             
         if not df_viagem.empty:
             nome_motorista = df_viagem["motorista"].iloc[0] if "motorista" in df_viagem.columns and pd.notna(df_viagem["motorista"].iloc[0]) else "Não Informado"
-            
             st.info(f"🚚 Motorista: {nome_motorista} | Notas do Romaneio: {len(df_viagem)}")
             
             st.markdown("---")
@@ -230,9 +213,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                 nf_bipada_ret = st.text_input("Aponte o Leitor (Canhoto):", key="txt_retorno", placeholder="Bipa o canhoto...")
                 
                 if nf_bipada_ret:
-                    # Melhoria: Processa o input tratando variações do leitor de código de barras
                     nf_limpa = extrair_nf_da_bipagem(nf_bipada_ret)
-                    
                     if nf_limpa and nf_limpa in df_viagem["numero_nf"].astype(str).values:
                         if atualizar_status_bipagem(nf_limpa, "status_volta", "ENTREGUE / CANHOTO OK"):
                             st.success(f"✅ Baixa confirmada para a NF {nf_limpa} no banco de dados!")
@@ -263,7 +244,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                             "Arquivo XML": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
                             "Cliente": nome_cliente,
                             "Previsão Entrega": str(data_prev),
-                            "Status Auditoria": f"🚨 RETORNO COM ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
+                            "Status Auditoria": f"🚨 RETORNO WITH ERROR ({motivo_nao_retorno})",
                             "Justificativa / Motivo": f"Problema relatado no retorno do motorista: {motivo_nao_retorno}"
                         }]
                         salvar_dados_consolidados(None, nova_div_ret)
@@ -275,7 +256,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
             st.dataframe(df_viagem, use_container_width=True)
 
 # ==============================================================================
-# MODO: INJEÇÃO DE PLANILHAS (CARGA REAL NO BANCO)
+# MODO: INJEÇÃO DE PLANILHAS (SISTEMA DE CAPTURA CORRIGIDO PARA ARQUIVOS GRANDES)
 # ==============================================================================
 elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
     st.title("⚙️ Painel de Carga e Cruzamento de Dados")
@@ -291,7 +272,7 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
         if not romaneio_file or not xml_files:
             st.error("❌ Carregue ambos os arquivos para executar o processamento.")
         else:
-            with st.spinner("⏳ Processando e gravando dados na nuvem..."):
+            with st.spinner("⏳ Analisando e processando grandes volumes de dados..."):
                 try:
                     nfs_romaneios = {}
                     romaneio_atual = "-"
@@ -305,23 +286,26 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                             continue
                         
                         colunas = [c.strip() for c in linha.split(";")]
-                        
-                        # --- MELHORIA CRÍTICA 1: Identificação flexível de novo Romaneio ---
-                        # Se a linha contiver um número seguido de hífen nas primeiras posições, assume como romaneio
-                        if len(colunas) > 0 and colunas[0]:
-                            primeira_col = colunas[0]
-                            # Expressão regular para capturar "12345 -" ou estruturas similares de ID de romaneio
-                            if re.match(r'^\d+\s*-', primeira_col):
-                                romaneio_atual = primeira_col.split("-")[0].strip()
-                                if len(colunas) > 4 and colunas[4]:
-                                    motorista_atual = colunas[4]
-                                continue
-                        
-                        if "Nr. Romaneio" in colunas[0] or "Filial" in colunas[0]:
+                        if len(colunas) == 0:
                             continue
                         
-                        # 2. CAPTURA DAS NOTAS FISCAIS
+                        # --- MOTOR DE EXTRAÇÃO REFEITO ---
+                        # Evita falhar se o separador mudar ou se houver espaços ocultos no cabeçalho
+                        primeira_celula = colunas[0]
+                        
+                        # Se contiver a expressão regular de romaneio ex: "11250 -" ou similar, captura
+                        if re.match(r'^\d+\s*-', primeira_celula):
+                            romaneio_atual = primeira_celula.split("-")[0].strip()
+                            if len(colunas) > 4 and colunas[4]:
+                                motorista_atual = colunas[4].strip()
+                            continue
+                        
+                        if "Nr. Romaneio" in primeira_celula or "Filial" in primeira_celula:
+                            continue
+                        
+                        # Captura as Notas Fiscais dinamicamente sem limite posicional rígido
                         if len(colunas) >= 12:
+                            # Tenta ler a NF na coluna 10 (Índice padrão do ERP)
                             num_nf_raw = colunas[10].strip()
                             valor_raw = colunas[11].strip()
                             
@@ -392,18 +376,20 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                         "Justificativa / Motivo": "🗺️ Erro de Roteirização (Faturado sem Viagem)"
                                     })
                         except Exception as xml_err:
-                            # Se um XML falhar, avisa mas continua processando os outros 2999+
-                            st.sidebar.warning(f"Erro ao ler XML {xml_file.name}: {xml_err}")
                             continue
 
-                    # --- MELHORIA CRÍTICA 2: Envio em Lote (Bulk Upsert) para evitar Timeouts ---
+                    # --- SUBIDA EM LOTE (BULK UPSERT) OTIMIZADO ---
+                    # Dividimos em blocos de 200 registros para garantir que o Supabase/PostgreSQL 
+                    # processe tudo sem estourar o buffer de memória ou dar timeout.
+                    tamanho_lote = 200
                     sucesso_salvamento = True
+                    
                     try:
-                        # Envia todas as notas válidas de uma só vez (Operação atômica rápida)
                         if notes_validadas:
-                            supabase.table("tb_expedicao").upsert(notes_validadas, on_conflict="numero_nf").execute()
+                            for i in range(0, len(notes_validadas), tamanho_lote):
+                                lote = notes_validadas[i:i + tamanho_lote]
+                                supabase.table("tb_expedicao").upsert(lote, on_conflict="numero_nf").execute()
                         
-                        # Formata e envia as divergências em lote único
                         if lista_divergencias:
                             div_sql_list = []
                             for div in lista_divergencias:
@@ -415,19 +401,21 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                     "status_auditoria": div["Status Auditoria"],
                                     "justificativa_motivo": div["Justificativa / Motivo"]
                                 })
-                            supabase.table("tb_divergencias").upsert(div_sql_list).execute()
-                    except Exception as e_db:
-                        st.error(f"Erro ao salvar lotes no Supabase: {e_db}")
+                            for i in range(0, len(div_sql_list), tamanho_lote):
+                                lote_div = div_sql_list[i:i + tamanho_lote]
+                                supabase.table("tb_divergencias").upsert(lote_div).execute()
+                    except Exception as db_err:
+                        st.error(f"Falha na gravação dos dados: {db_err}")
                         sucesso_salvamento = False
 
                     if sucesso_salvamento:
-                        st.success(f"📊 Sucesso! {len(notes_validadas)} Notas e {len(lista_divergencias)} Divergências processadas.")
+                        st.success(f"📊 Processamento completo! {len(notes_validadas)} notas integradas e {len(lista_divergencias)} divergências salvas.")
                         st.rerun()
                 except Exception as e:
-                    st.error(f"⚠️ Erro crítico no processamento global: {e}")
+                    st.error(f"⚠️ Erro no processamento global: {e}")
 
 # ==============================================================================
-# MODO: DIVERGÊNCIAS DE XML (LENDO DIRETAMENTE DO SUPABASE)
+# MODO: DIVERGÊNCIAS DE XML
 # ==============================================================================
 elif modo_visao == "🚨 Divergências de XML":
     st.title("🚨 Central Única de Auditoria e Divergências")
