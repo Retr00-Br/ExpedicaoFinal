@@ -136,7 +136,7 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
     if df_principal.empty:
         st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
     else:
-        # --- MOTOR DE BUSCA INTELIGENTE (PROCURA POR ROMANEIO INDEPENDENTE DE MAIÚSCULAS/MINÚSCULAS) ---
+        # --- MOTOR DE BUSCA INTELIGENTE ---
         coluna_romaneio = [col for col in df_principal.columns if "romaneio" in col.lower()]
         
         if coluna_romaneio:
@@ -203,7 +203,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
     if df_principal.empty:
         st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
     else:
-        # --- MOTOR DE BUSCA INTELIGENTE DA VOLTA (PROCURA POR ROMANEIO) ---
+        # --- MOTOR DE BUSCA INTELIGENTE DA VOLTA ---
         coluna_romaneio = [col for col in df_principal.columns if "romaneio" in col.lower()]
         
         if coluna_romaneio:
@@ -357,7 +357,7 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                     data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
                                     data_emissao_str = data_obj.strftime("%d/%m/%Y")
                                     data_previsao_xml = (data_obj + timedelta(days=2)).strftime("%d/%m/%Y")
-                                Except: pass
+                                except: pass
 
                             if nf_limpa in nfs_romaneios:
                                 notas_validadas.append({
