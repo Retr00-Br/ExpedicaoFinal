@@ -24,20 +24,21 @@ supabase = iniciar_conexao_supabase()
 # --- FUNÇÕES DE INTERAÇÃO COM O BANCO ---
 def carregar_dados_principais():
     try:
+        # Garante a busca correta dos dados
         resposta = supabase.table("bd_expedicao").select("*").execute()
-        if resposta.data:
+        if resposta.data and len(resposta.data) > 0:
             return pd.DataFrame(resposta.data)
+        # Se retornar uma lista vazia, monta a estrutura padrão vazia
         return pd.DataFrame(columns=["numero_nf", "romaneio", "motorista", "cliente", "valor_nota", "data_emissao", "previsao_entrega", "status_ida", "status_volta"])
     except Exception as e:
-        st.error(f"Erro ao ler banco de dados: {e}")
+        st.sidebar.error(f"⚠️ Erro ao ler Expedição: {e}")
         return pd.DataFrame(columns=["numero_nf", "romaneio", "motorista", "cliente", "valor_nota", "data_emissao", "previsao_entrega", "status_ida", "status_volta"])
 
 def carregar_divergencias():
     try:
         resposta = supabase.table("bd_divergencias").select("*").execute()
-        if resposta.data:
+        if resposta.data and len(resposta.data) > 0:
             df = pd.DataFrame(resposta.data)
-            # Mapeia colunas do banco para exibição limpa na tela
             df = df.rename(columns={
                 "arquivo_xml": "Arquivo XML",
                 "nota_fiscal": "Nota Fiscal",
@@ -49,6 +50,7 @@ def carregar_divergencias():
             return df
         return pd.DataFrame(columns=["Arquivo XML", "Nota Fiscal", "Cliente", "Previsão Entrega", "Status Auditoria", "Justificativa / Motivo"])
     except Exception as e:
+        st.sidebar.error(f"⚠️ Erro ao ler Divergências: {e}")
         return pd.DataFrame(columns=["Arquivo XML", "Nota Fiscal", "Cliente", "Previsão Entrega", "Status Auditoria", "Justificativa / Motivo"])
 
 def salvar_dados_consolidados(dados_notas, dados_divergencias):
@@ -129,57 +131,57 @@ if modo_visao == "📊 Dashboard Geral":
 # MODO: BIPAGEM - SAÍDA EXPEDIÇÃO
 # ==============================================================================
 elif modo_visao == "📤 Bipagem - Saída Expedição":
-    st.title("📤 Fluxo de Expedição - Saída de Veículos")
+    st.title("📤 Controle de Portaria - Saída de Veículos")
     
     if df_principal.empty:
-        st.warning("⚠️ Nenhuma base carregada no Supabase. Importe o Romaneio primeiro na aba de Carga.")
+        st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
     else:
-        romaneios_disponiveis = sorted(df_principal['romaneio'].unique())
-        romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio para conferência:", romaneios_disponiveis)
+        # --- TRATAMENTO SEGURO PARA O MOTOR DE BUSCA DA IDA ---
+        valores_romaneio_ida = df_principal['romaneio'].dropna().unique() if 'romaneio' in df_principal.columns else []
         
-        df_viagem = df_principal[df_principal['romaneio'] == romaneio_selecionado]
-        st.info(f"🚚 Motorista Associado: {df_viagem['motorista'].iloc[0]} | Quantidade de Notas: {len(df_viagem)}")
-        
-        st.markdown("---")
-        col_bip, col_ret = st.columns(2)
-        
-        with col_bip:
-            st.markdown("### 🟢 Bipagem de Fluxo Normal")
-            nf_bipada = st.text_input("Aponte o Leitor (Código de Barras):", key="txt_saida", placeholder="Bipa a NF aqui...")
+        if len(valores_romaneio_ida) == 0:
+            st.warning("📋 Nenhum romaneio ativo para saída encontrado no banco de dados.")
+        else:
+            romaneios_disponiveis_ida = sorted(valores_romaneio_ida)
+            romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio para conferência:", romaneios_disponiveis_ida, key="rom_ida")
             
-            if nf_bipada:
-                nf_limpa = str(int(nf_bipada[-9:])) if len(nf_bipada) == 44 else str(int(nf_bipada.strip()))
+            df_viagem = df_principal[df_principal['romaneio'] == romaneio_selecionado]
+            
+            if not df_viagem.empty:
+                st.info(f"🚚 Motorista Associado: {df_viagem['motorista'].iloc[0]} | Quantidade de Notas: {len(df_viagem)}")
                 
-                if nf_limpa in df_viagem['numero_nf'].values:
-                    if atualizar_status_bipagem(nf_limpa, "status_ida", "CONFERIDO / EXPEDIDO"):
-                        st.success(f"✅ NF {nf_limpa} liberada para viagem no Supabase!")
-                        st.rerun()
-                else:
-                    st.error(f"❌ Erro de Validação: A NF {nf_limpa} NÃO pertence ao Romaneio {romaneio_selecionado}!")
-
-        with col_ret:
-            st.markdown("### 🔴 Tratamento de Notas Não Enviadas")
-            nf_retida = st.selectbox("Selecione a NF Retida:", ["-"] + list(df_viagem[df_viagem['status_ida'] == "PENDENTE DE BIPAGEM"]['numero_nf'].unique()))
-            motivo_nao_ir = st.selectbox("Motivo da Nota não seguir viagem:", ["Falta de material", "Nota não realizada", "Nota perdida", "Ida Parcial"])
-            
-            if st.button("Gravar Retenção de Saída") and nf_retida != "-":
-                if atualizar_status_bipagem(nf_retida, "status_ida", f"RETIDA: {motivo_nao_ir}"):
-                    # Envia com toda a justificativa direto para as divergências do Supabase
-                    nova_div = [{
-                        "Nota Fiscal": nf_retida,
-                        "Arquivo XML": f"RETENCAO_SAIDA_{nf_retida}.xml",
-                        "Cliente": df_viagem[df_viagem['numero_nf'] == nf_retida]['cliente'].iloc[0],
-                        "Previsão Entrega": df_viagem[df_viagem['numero_nf'] == nf_retida]['previsao_entrega'].iloc[0],
-                        "Status Auditoria": f"🚨 EXPEDIÇÃO RECUSADA ({motivo_nao_ir.upper()})",
-                        "Justificativa / Motivo": f"Nota retida na doca de saída por motivo de: {motivo_nao_ir}"
-                    }]
-                    salvar_dados_consolidados(None, nova_div)
-                    st.warning(f"📌 Alerta: NF {nf_retida} gravada como Retida no Supabase.")
-                    st.rerun()
-
-        st.markdown("---")
-        st.subheader("📋 Grid de Conferência da Viagem")
-        st.dataframe(df_viagem[["numero_nf", "cliente", "valor_nota", "status_ida"]], use_container_width=True)
+                st.markdown("---")
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.markdown("### 🔍 Leitura de Chaves de Acesso (XML)")
+                    nf_bipada = st.text_input("Aponte o Leitor de Código de Barras:", key="txt_bipagem", placeholder="Bipa a chave de 44 dígitos...")
+                    
+                    if nf_bipada:
+                        # Extrai os 9 dígitos da NF se for uma chave completa de 44, ou limpa o texto inserido
+                        nf_limpa = str(int(nf_bipada[-9:])) if len(nf_bipada) == 44 else str(int(nf_bipada.strip()))
+                        
+                        if nf_limpa in df_viagem['numero_nf'].values:
+                            if atualizar_status_bipagem(nf_limpa, "status_ida", "PROCESSO DE EMBARQUE OK"):
+                                st.success(f"✅ NF {nf_limpa} validada e carregada no veículo com sucesso!")
+                                st.rerun()
+                        else:
+                            st.error(f"❌ Alerta de Desvio! A NF {nf_limpa} NÃO pertence ao Romaneio {romaneio_selecionado}!")
+                
+                with col2:
+                    st.markdown("### 📊 Status da Carga")
+                    total_notas = len(df_viagem)
+                    # Tratamento seguro caso a coluna 'status_ida' ainda não tenha registros
+                    notas_ok = len(df_viagem[df_viagem['status_ida'] == "PROCESSO DE EMBARQUE OK"]) if 'status_ida' in df_viagem.columns else 0
+                    notas_em_aguardo = total_notas - notas_ok
+                    
+                    st.metric("Notas Roteirizadas", total_notas)
+                    st.metric("✅ Bipadas/Embarcadas", notas_ok)
+                    st.metric("⏳ Aguardando Bipagem", notas_em_aguardo)
+                
+                st.markdown("---")
+                st.subheader("📋 Grid de Conferência da Viagem")
+                st.dataframe(df_viagem[["numero_nf", "cliente", "status_ida", "status_volta"]], use_container_width=True)
 
 # ==============================================================================
 # MODO: BIPAGEM - RETORNO CARGA
@@ -190,57 +192,66 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
     if df_principal.empty:
         st.warning("⚠️ Nenhuma base carregada no Supabase.")
     else:
-        romaneios_disponiveis = sorted(df_principal['romaneio'].unique())
-        romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio que está retornando:", romaneios_disponiveis, key="rom_ret")
+        # --- PROTEÇÃO DO MOTOR DE BUSCA DA VOLTA ---
+        valores_romaneio_volta = df_principal['romaneio'].dropna().unique() if 'romaneio' in df_principal.columns else []
         
-        df_viagem = df_principal[df_principal['romaneio'] == romaneio_selecionado]
-        st.info(f"🚚 Motorista: {df_viagem['motorista'].iloc[0]} | Notas do Romaneio: {len(df_viagem)}")
-        
-        st.markdown("---")
-        col_baixa, col_dev = st.columns(2)
-        
-        with col_baixa:
-            st.markdown("### 🟢 Baixa de Canhotos (Entregues)")
-            nf_bipada_ret = st.text_input("Aponte o Leitor (Canhoto):", key="txt_retorno", placeholder="Bipa o canhoto...")
+        if len(valores_romaneio_volta) == 0:
+            st.warning("📋 Nenhum romaneio ativo para retorno no banco de dados.")
+        else:
+            romaneios_disponiveis_ret = sorted(valores_romaneio_volta)
+            romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio que está retornando:", romaneios_disponiveis_ret, key="rom_ret")
             
-            if nf_bipada_ret:
-                nf_limpa = str(int(nf_bipada_ret[-9:])) if len(nf_bipada_ret) == 44 else str(int(nf_bipada_ret.strip()))
+            df_viagem = df_principal[df_principal['romaneio'] == romaneio_selecionado]
+            
+            if not df_viagem.empty:
+                st.info(f"🚚 Motorista: {df_viagem['motorista'].iloc[0]} | Notas do Romaneio: {len(df_viagem)}")
                 
-                if nf_limpa in df_viagem['numero_nf'].values:
-                    if atualizar_status_bipagem(nf_limpa, "status_volta", "ENTREGUE / CANHOTO OK"):
-                        st.success(f"✅ Baixa confirmada para a NF {nf_limpa} no banco de dados!")
-                        st.rerun()
-                else:
-                    st.error(f"❌ Erro de Roteiro: NF {nf_limpa} não pertence a esta viagem!")
+                st.markdown("---")
+                col_baixa, col_dev = st.columns(2)
+                
+                with col_baixa:
+                    st.markdown("### 🟢 Baixa de Canhotos (Entregues)")
+                    nf_bipada_ret = st.text_input("Aponte o Leitor (Canhoto):", key="txt_retorno", placeholder="Bipa o canhoto...")
+                    
+                    if nf_bipada_ret:
+                        nf_limpa = str(int(nf_bipada_ret[-9:])) if len(nf_bipada_ret) == 44 else str(int(nf_bipada_ret.strip()))
+                        
+                        if nf_limpa in df_viagem['numero_nf'].values:
+                            if atualizar_status_bipagem(nf_limpa, "status_volta", "ENTREGUE / CANHOTO OK"):
+                                st.success(f"✅ Baixa confirmada para a NF {nf_limpa} no banco de dados!")
+                                st.rerun()
+                        else:
+                            st.error(f"❌ Erro de Roteiro: NF {nf_limpa} não pertence a esta viagem!")
 
-        with col_dev:
-            st.markdown("### 🔴 Registro de Ocorrências / Não Retorno")
-            nf_problema = st.selectbox("Selecione a NF com Ocorrência:", ["-"] + list(df_viagem[df_viagem['status_volta'] == "EM AGUARDO"]['numero_nf'].unique()))
-            motivo_nao_retorno = st.selectbox("Motivo do Não Retorno do Canhoto:", [
-                "🚨 DEVOLUÇÃO TOTAL", 
-                "❌ RECUSADO PELO CLIENTE", 
-                "🔄 REENTREGA SOLICITADA", 
-                "🔍 CANHOTO EM ANÁLISE"
-            ])
-            
-            if st.button("Registrar Ocorrência") and nf_problema != "-":
-                if atualizar_status_bipagem(nf_problema, "status_volta", motivo_nao_retorno):
-                    # Envia a ocorrência detalhada direto para a auditoria no Supabase
-                    nova_div_ret = [{
-                        "Nota Fiscal": nf_problema,
-                        "Arquivo XML": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
-                        "Cliente": df_viagem[df_viagem['numero_nf'] == nf_problema]['cliente'].iloc[0],
-                        "Previsão Entrega": df_viagem[df_viagem['numero_nf'] == nf_problema]['previsao_entrega'].iloc[0],
-                        "Status Auditoria": f"🚨 RETORNO COM ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
-                        "Justificativa / Motivo": f"Problema relatado no retorno do motorista: {motivo_nao_retorno}"
-                    }]
-                    salvar_dados_consolidados(None, nova_div_ret)
-                    st.error(f"📌 Ocorrência gravada na auditoria do Supabase para a NF {nf_problema}.")
-                    st.rerun()
+                with col_dev:
+                    st.markdown("### 🔴 Registro de Ocorrências / Não Retorno")
+                    # Protege a listagem de notas pendentes daquela viagem específica
+                    notas_pendentes_volta = list(df_viagem[df_viagem['status_volta'] == "EM AGUARDO"]['numero_nf'].unique()) if 'status_volta' in df_viagem.columns else []
+                    nf_problema = st.selectbox("Selecione a NF com Ocorrência:", ["-"] + notas_pendentes_volta)
+                    motivo_nao_retorno = st.selectbox("Motivo do Não Retorno do Canhoto:", [
+                        "🚨 DEVOLUÇÃO TOTAL", 
+                        "❌ RECUSADO PELO CLIENTE", 
+                        "🔄 REENTREGA SOLICITADA", 
+                        "🔍 CANHOTO EM ANÁLISE"
+                    ])
+                    
+                    if st.button("Registrar Ocorrência") and nf_problema != "-":
+                        if atualizar_status_bipagem(nf_problema, "status_volta", motivo_nao_retorno):
+                            nova_div_ret = [{
+                                "Nota Fiscal": nf_problema,
+                                "Arquivo XML": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
+                                "Cliente": df_viagem[df_viagem['numero_nf'] == nf_problema]['cliente'].iloc[0],
+                                "Previsão Entrega": df_viagem[df_viagem['numero_nf'] == nf_problema]['previsao_entrega'].iloc[0],
+                                "Status Auditoria": f"🚨 RETORNO COM ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
+                                "Justificativa / Motivo": f"Problema relatado no retorno do motorista: {motivo_nao_retorno}"
+                            }]
+                            salvar_dados_consolidados(None, nova_div_ret)
+                            st.error(f"📌 Ocorrência gravada na auditoria do Supabase para a NF {nf_problema}.")
+                            st.rerun()
 
-        st.markdown("---")
-        st.subheader("📋 Controle de Entrega Física da Viagem")
-        st.dataframe(df_viagem[["numero_nf", "cliente", "status_ida", "status_volta"]], use_container_width=True)
+                st.markdown("---")
+                st.subheader("📋 Controle de Entrega Física da Viagem")
+                st.dataframe(df_viagem[["numero_nf", "cliente", "status_ida", "status_volta"]], use_container_width=True)
 
 # ==============================================================================
 # MODO: INJEÇÃO DE PLANILHAS (CARGA REAL NO BANCO)
