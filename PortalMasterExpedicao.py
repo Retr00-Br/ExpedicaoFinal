@@ -25,7 +25,7 @@ supabase = iniciar_conexao_supabase()
 # --- FUNÇÕES DE INTERAÇÃO COM O BANCO ---
 def carregar_dados_principais():
     try:
-        resposta = supabase.table("bd_expedicao").select("*").execute()
+        resposta = supabase.table("tb_expedicao").select("*").execute()
         if resposta.data and len(resposta.data) > 0:
             return pd.DataFrame(resposta.data)
         return pd.DataFrame(columns=["numero_nf", "romaneio", "motorista", "cliente", "valor_nota", "data_emissao", "previsao_entrega", "status_ida", "status_volta"])
@@ -35,7 +35,7 @@ def carregar_dados_principais():
 
 def carregar_divergencias():
     try:
-        resposta = supabase.table("bd_divergencias").select("*").execute()
+        resposta = supabase.table("tb_divergencias").select("*").execute()
         if resposta.data and len(resposta.data) > 0:
             df = pd.DataFrame(resposta.data)
             df = df.rename(columns={
@@ -56,7 +56,7 @@ def salvar_dados_consolidados(dados_notas, dados_divergencias):
     try:
         if dados_notas:
             for nota in dados_notas:
-                supabase.table("bd_expedicao").upsert(nota).execute()
+                supabase.table("tb_expedicao").upsert(nota).execute()
         if dados_divergencias:
             for div in dados_divergencias:
                 div_sql = {
@@ -67,7 +67,7 @@ def salvar_dados_consolidados(dados_notas, dados_divergencias):
                     "status_auditoria": div["Status Auditoria"],
                     "justificativa_motivo": div["Justificativa / Motivo"]
                 }
-                supabase.table("bd_divergencias").upsert(div_sql).execute()
+                supabase.table("tb_divergencias").upsert(div_sql).execute()
         return True
     except Exception as e:
         st.error(f"Erro ao salvar dados no Supabase: {e}")
@@ -75,7 +75,7 @@ def salvar_dados_consolidados(dados_notas, dados_divergencias):
 
 def atualizar_status_bipagem(numero_nf, coluna_status, novo_status):
     try:
-        resposta = supabase.table("bd_expedicao").update({coluna_status: novo_status}).eq("numero_nf", numero_nf).execute()
+        resposta = supabase.table("tb_expedicao").update({coluna_status: novo_status}).eq("numero_nf", numero_nf).execute()
         return len(resposta.data) > 0
     except Exception as e:
         st.error(f"Erro ao atualizar status: {e}")
@@ -268,7 +268,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                             "Arquivo XML": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
                             "Cliente": nome_cliente,
                             "Previsão Entrega": str(data_prev),
-                            "Status Auditoria": f"🚨 RETORNO WITH ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
+                            "Status Auditoria": f"🚨 RETORNO COM ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
                             "Justificativa / Motivo": f"Problema relatado no retorno do motorista: {motivo_nao_retorno}"
                         }]
                         salvar_dados_consolidados(None, nova_div_ret)
@@ -309,15 +309,11 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                         if not linha_limpa: 
                             continue
                         
-                        # --- DETECTOR INTELIGENTE DE CABEÇALHO DE VIAGEM ---
-                        # Procura padrões dinâmicos como "ROMANEIO: XXXXX" e "MOTORISTA: YYYYY"
                         if "ROMANEIO" in linha_limpa.upper():
-                            # Extração via regex do número do romaneio
                             match_rom = re.search(r'(?:ROMANEIO\s*:\s*)(\w+)', linha_limpa, re.IGNORECASE)
                             if match_rom:
                                 romaneio_atual = match_rom.group(1).strip()
                             
-                            # Extração via regex do nome do motorista
                             match_mot = re.search(r'(?:MOTORISTA\s*:\s*)([^|;\n]+)', linha_limpa, re.IGNORECASE)
                             if match_mot:
                                 motorista_atual = match_mot.group(1).strip()
@@ -325,15 +321,12 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
 
                         colunas = linha_limpa.split(";")
                         
-                        # Ajuste para ler as notas fiscais do detalhe da lista
                         if len(colunas) >= 2:
-                            # Tenta localizar de forma dinâmica uma coluna numérica que represente a NF
                             for col_val in colunas:
                                 col_val_clean = col_val.strip()
                                 if col_val_clean.isdigit() and len(col_val_clean) <= 9 and col_val_clean != "0":
                                     num_nf_limpo = str(int(col_val_clean))
                                     
-                                    # Captura valor se disponível em colunas adjacentes, senão define 0.0
                                     valor_estimado = 0.0
                                     for c in colunas:
                                         c_limpo = c.replace(",", ".").strip()
