@@ -130,8 +130,8 @@ if modo_visao == "📊 Dashboard Geral":
 # ==============================================================================
 # MODO: BIPAGEM - SAÍDA EXPEDIÇÃO
 # ==============================================================================
-elif modo_visao == "📤 Bipagem - Saída Expedição":
-    st.title("📤 Controle de Portaria - Saída de Veículos")
+elif modo_visao == "📥 Bipagem - Retorno Carga":
+    st.title("📥 Prestação de Contas - Retorno de Motoristas")
     
     if df_principal.empty:
         st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
