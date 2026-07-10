@@ -306,15 +306,16 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                         
                         colunas = [c.strip() for c in linha.split(";")]
                         
-                        # 1. CAPTURA DO CABEÇALHO DO ROMANEIO
-                        if len(colunas) > 0 and "-" in colunas[0] and "|" in colunas[0]:
-                            partes_rom = colunas[0].split("-")
-                            if partes_rom[0].strip().isdigit():
-                                romaneio_atual = partes_rom[0].strip()
-                            
-                            if len(colunas) > 4 and colunas[4]:
-                                motorista_atual = colunas[4]
-                            continue
+                        # --- MELHORIA CRÍTICA 1: Identificação flexível de novo Romaneio ---
+                        # Se a linha contiver um número seguido de hífen nas primeiras posições, assume como romaneio
+                        if len(colunas) > 0 and colunas[0]:
+                            primeira_col = colunas[0]
+                            # Expressão regular para capturar "12345 -" ou estruturas similares de ID de romaneio
+                            if re.match(r'^\d+\s*-', primeira_col):
+                                romaneio_atual = primeira_col.split("-")[0].strip()
+                                if len(colunas) > 4 and colunas[4]:
+                                    motorista_atual = colunas[4]
+                                continue
                         
                         if "Nr. Romaneio" in colunas[0] or "Filial" in colunas[0]:
                             continue
@@ -343,58 +344,87 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
 
                     # 3. CRUZAMENTO COM OS ARQUIVOS XML
                     for xml_file in xml_files:
-                        tree = ET.parse(xml_file)
-                        root = tree.getroot()
-                        ns = {'ns': 'http://www.portalfiscal.inf.br/nfe'}
+                        try:
+                            tree = ET.parse(xml_file)
+                            root = tree.getroot()
+                            ns = {'ns': 'http://www.portalfiscal.inf.br/nfe'}
 
-                        num_nf_xml = root.find('.//ns:ide/ns:nNF', ns)
-                        cliente_xml = root.find('.//ns:dest/ns:xNome', ns)
-                        dhEmi_xml = root.find('.//ns:ide/ns:dhEmi', ns)
-                        vNF_xml = root.find('.//ns:total/ns:ICMSTot/ns:vNF', ns)
+                            num_nf_xml = root.find('.//ns:ide/ns:nNF', ns)
+                            cliente_xml = root.find('.//ns:dest/ns:xNome', ns)
+                            dhEmi_xml = root.find('.//ns:ide/ns:dhEmi', ns)
+                            vNF_xml = root.find('.//ns:total/ns:ICMSTot/ns:vNF', ns)
 
-                        if num_nf_xml is not None:
-                            nf_limpa = str(int(num_nf_xml.text.strip()))
-                            nome_cliente = cliente_xml.text.strip() if cliente_xml is not None else "Não Identificado"
-                            valor_nota = float(vNF_xml.text) if vNF_xml is not None else 0.0
-                            
-                            data_previsao_xml = "-"
-                            data_emissao_str = "-"
-                            if dhEmi_xml is not None and dhEmi_xml.text:
-                                try:
-                                    data_iso = dhEmi_xml.text.split("T")[0]
-                                    data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
-                                    data_emissao_str = data_obj.strftime("%d/%m/%Y")
-                                    data_previsao_xml = (data_obj + timedelta(days=2)).strftime("%d/%m/%Y")
-                                except: 
-                                    pass
+                            if num_nf_xml is not None:
+                                nf_limpa = str(int(num_nf_xml.text.strip()))
+                                nome_cliente = cliente_xml.text.strip() if cliente_xml is not None else "Não Identificado"
+                                valor_nota = float(vNF_xml.text) if vNF_xml is not None else 0.0
+                                
+                                data_previsao_xml = "-"
+                                data_emissao_str = "-"
+                                if dhEmi_xml is not None and dhEmi_xml.text:
+                                    try:
+                                        data_iso = dhEmi_xml.text.split("T")[0]
+                                        data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
+                                        data_emissao_str = data_obj.strftime("%d/%m/%Y")
+                                        data_previsao_xml = (data_obj + timedelta(days=2)).strftime("%d/%m/%Y")
+                                    except: 
+                                        pass
 
-                            if nf_limpa in nfs_romaneios:
-                                notes_validadas.append({
-                                    "numero_nf": nf_limpa,
-                                    "romaneio": nfs_romaneios[nf_limpa]["romaneio"],
-                                    "motorista": nfs_romaneios[nf_limpa]["motorista"],
-                                    "cliente": nome_cliente,
-                                    "valor_nota": valor_nota if valor_nota > 0 else nfs_romaneios[nf_limpa]["valor"],
-                                    "data_emissao": data_emissao_str,
-                                    "previsao_entrega": data_previsao_xml,
-                                    "status_ida": "PENDENTE DE BIPAGEM",
-                                    "status_volta": "EM AGUARDO"
+                                if nf_limpa in nfs_romaneios:
+                                    notes_validadas.append({
+                                        "numero_nf": nf_limpa,
+                                        "romaneio": nfs_romaneios[nf_limpa]["romaneio"],
+                                        "motorista": nfs_romaneios[nf_limpa]["motorista"],
+                                        "cliente": nome_cliente,
+                                        "valor_nota": valor_nota if valor_nota > 0 else nfs_romaneios[nf_limpa]["valor"],
+                                        "data_emissao": data_emissao_str,
+                                        "previsao_entrega": data_previsao_xml,
+                                        "status_ida": "PENDENTE DE BIPAGEM",
+                                        "status_volta": "EM AGUARDO"
+                                    })
+                                else:
+                                    lista_divergencias.append({
+                                        "Arquivo XML": xml_file.name,
+                                        "Nota Fiscal": nf_limpa,
+                                        "Cliente": nome_cliente,
+                                        "Previsão Entrega": data_previsao_xml,
+                                        "Status Auditoria": "🚨 FORA DO ROMANEIO (ÓRFÃ)",
+                                        "Justificativa / Motivo": "🗺️ Erro de Roteirização (Faturado sem Viagem)"
+                                    })
+                        except Exception as xml_err:
+                            # Se um XML falhar, avisa mas continua processando os outros 2999+
+                            st.sidebar.warning(f"Erro ao ler XML {xml_file.name}: {xml_err}")
+                            continue
+
+                    # --- MELHORIA CRÍTICA 2: Envio em Lote (Bulk Upsert) para evitar Timeouts ---
+                    sucesso_salvamento = True
+                    try:
+                        # Envia todas as notas válidas de uma só vez (Operação atômica rápida)
+                        if notes_validadas:
+                            supabase.table("tb_expedicao").upsert(notes_validadas, on_conflict="numero_nf").execute()
+                        
+                        # Formata e envia as divergências em lote único
+                        if lista_divergencias:
+                            div_sql_list = []
+                            for div in lista_divergencias:
+                                div_sql_list.append({
+                                    "nota_fiscal": div["Nota Fiscal"],
+                                    "arquivo_xml": div["Arquivo XML"],
+                                    "cliente": div["Cliente"],
+                                    "previsao_entrega": div["Previsão Entrega"],
+                                    "status_auditoria": div["Status Auditoria"],
+                                    "justificativa_motivo": div["Justificativa / Motivo"]
                                 })
-                            else:
-                                lista_divergencias.append({
-                                    "Arquivo XML": xml_file.name,
-                                    "Nota Fiscal": nf_limpa,
-                                    "Cliente": nome_cliente,
-                                    "Previsão Entrega": data_previsao_xml,
-                                    "Status Auditoria": "🚨 FORA DO ROMANEIO (ÓRFÃ)",
-                                    "Justificativa / Motivo": "🗺️ Erro de Roteirização (Faturado sem Viagem)"
-                                })
+                            supabase.table("tb_divergencias").upsert(div_sql_list).execute()
+                    except Exception as e_db:
+                        st.error(f"Erro ao salvar lotes no Supabase: {e_db}")
+                        sucesso_salvamento = False
 
-                    if salvar_dados_consolidados(notes_validadas, lista_divergencias):
+                    if sucesso_salvamento:
                         st.success(f"📊 Sucesso! {len(notes_validadas)} Notas e {len(lista_divergencias)} Divergências processadas.")
                         st.rerun()
                 except Exception as e:
-                    st.error(f"⚠️ Erro crítico no processamento: {e}")
+                    st.error(f"⚠️ Erro crítico no processamento global: {e}")
 
 # ==============================================================================
 # MODO: DIVERGÊNCIAS DE XML (LENDO DIRETAMENTE DO SUPABASE)
