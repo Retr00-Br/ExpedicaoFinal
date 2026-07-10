@@ -136,26 +136,21 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
     if df_principal.empty:
         st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
     else:
-        coluna_romaneio = [col for col in df_principal.columns if "romaneio" in col.lower()]
-        
-        if coluna_romaneio:
-            col_nome = coluna_romaneio[0]
-            valores_originais = df_principal[col_nome].astype(str).str.strip().unique()
-            valores_filtrados = [r for r in valores_originais if r and r not in ["nan", "None", "", "null", "-"]]
-        else:
-            valores_filtrados = []
+        # Garante a remoção de valores nulos ou vazios reais na coluna 'romaneio'
+        df_limpo = df_principal.dropna(subset=["romaneio"])
+        valores_originais = df_limpo["romaneio"].astype(str).str.strip().unique()
+        valores_filtrados = [r for r in valores_originais if r not in ["nan", "None", "", "null", "-", "None "]]
             
         if len(valores_filtrados) == 0:
-            st.info("💡 Nenhum romaneio válido estruturado encontrado no banco de dados.")
+            st.info("💡 Nenhum romaneio válido encontrado na coluna 'romaneio' do banco de dados.")
             df_viagem = pd.DataFrame()
         else:
             romaneios_disponiveis_ida = sorted(valores_filtrados)
             romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio para conferência:", romaneios_disponiveis_ida, key="rom_ida")
-            df_viagem = df_principal[df_principal[col_nome].astype(str).str.strip() == romaneio_selecionado]
+            df_viagem = df_principal[df_principal["romaneio"].astype(str).str.strip() == romaneio_selecionado]
             
         if not df_viagem.empty:
-            col_motorista = [col for col in df_viagem.columns if "motorista" in col.lower()]
-            nome_motorista = df_viagem[col_motorista[0]].iloc[0] if col_motorista else "Não Informado"
+            nome_motorista = df_viagem["motorista"].iloc[0] if "motorista" in df_viagem.columns and pd.notna(df_viagem["motorista"].iloc[0]) else "Não Informado"
             
             st.info(f"🚚 Motorista Associado: {nome_motorista} | Quantidade de Notas: {len(df_viagem)}")
             
@@ -168,9 +163,8 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                 
                 if nf_bipada:
                     nf_limpa = str(int(nf_bipada[-9:])) if len(nf_bipada) == 44 else str(int(nf_bipada.strip()))
-                    col_nf = [col for col in df_viagem.columns if "nf" in col.lower() or "nota" in col.lower()]
                     
-                    if col_nf and nf_limpa in df_viagem[col_nf[0]].astype(str).values:
+                    if nf_limpa in df_viagem["numero_nf"].astype(str).values:
                         if atualizar_status_bipagem(nf_limpa, "status_ida", "PROCESSO DE EMBARQUE OK"):
                             st.success(f"✅ NF {nf_limpa} validada e carregada no veículo com sucesso!")
                             st.rerun()
@@ -200,34 +194,26 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
     if df_principal.empty:
         st.warning("📋 Sistema vazio no Supabase. Realize a primeira carga de planilhas para sincronizar.")
     else:
-        coluna_romaneio = [col for col in df_principal.columns if "romaneio" in col.lower()]
-        
-        if coluna_romaneio:
-            col_nome = coluna_romaneio[0]
-            valores_originais = df_principal[col_nome].astype(str).str.strip().unique()
-            valores_filtrados = [r for r in valores_originais if r and r not in ["nan", "None", "", "null", "-"]]
-        else:
-            valores_filtrados = []
+        # Garante a remoção de valores nulos ou vazios reais na coluna 'romaneio'
+        df_limpo = df_principal.dropna(subset=["romaneio"])
+        valores_originais = df_limpo["romaneio"].astype(str).str.strip().unique()
+        valores_filtrados = [r for r in valores_originais if r not in ["nan", "None", "", "null", "-", "None "]]
             
         if len(valores_filtrados) == 0:
-            st.info("💡 Nenhum romaneio válido estruturado encontrado no banco de dados.")
+            st.info("💡 Nenhum romaneio válido encontrado na coluna 'romaneio' do banco de dados.")
             df_viagem = pd.DataFrame()
         else:
             romaneios_disponiveis_ret = sorted(valores_filtrados)
             romaneio_selecionado = st.selectbox("📋 Selecione o Romaneio que está retornando:", romaneios_disponiveis_ret, key="rom_ret")
-            df_viagem = df_principal[df_principal[col_nome].astype(str).str.strip() == romaneio_selecionado]
+            df_viagem = df_principal[df_principal["romaneio"].astype(str).str.strip() == romaneio_selecionado]
             
         if not df_viagem.empty:
-            col_motorista = [col for col in df_viagem.columns if "motorista" in col.lower()]
-            nome_motorista = df_viagem[col_motorista[0]].iloc[0] if col_motorista else "Não Informado"
+            nome_motorista = df_viagem["motorista"].iloc[0] if "motorista" in df_viagem.columns and pd.notna(df_viagem["motorista"].iloc[0]) else "Não Informado"
             
             st.info(f"🚚 Motorista: {nome_motorista} | Notas do Romaneio: {len(df_viagem)}")
             
             st.markdown("---")
             col_baixa, col_dev = st.columns(2)
-            
-            col_nf = [col for col in df_viagem.columns if "nf" in col.lower() or "nota" in col.lower()]
-            nome_col_nf = col_nf[0] if col_nf else "numero_nf"
             
             with col_baixa:
                 st.markdown("### 🟢 Baixa de Canhotos (Entregues)")
@@ -236,7 +222,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                 if nf_bipada_ret:
                     nf_limpa = str(int(nf_bipada_ret[-9:])) if len(nf_bipada_ret) == 44 else str(int(nf_bipada_ret.strip()))
                     
-                    if nf_limpa in df_viagem[nome_col_nf].astype(str).values:
+                    if nf_limpa in df_viagem["numero_nf"].astype(str).values:
                         if atualizar_status_bipagem(nf_limpa, "status_volta", "ENTREGUE / CANHOTO OK"):
                             st.success(f"✅ Baixa confirmada para a NF {nf_limpa} no banco de dados!")
                             st.rerun()
@@ -245,8 +231,8 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
 
             with col_dev:
                 st.markdown("### 🔴 Registro de Ocorrências / Não Retorno")
-                status_col = "status_volta" if "status_volta" in df_viagem.columns else df_viagem.columns[-1]
-                notas_pendentes_volta = list(df_viagem[df_viagem[status_col] == "EM AGUARDO"][nome_col_nf].astype(str).unique())
+                status_col = "status_volta"
+                notas_pendentes_volta = list(df_viagem[df_viagem[status_col] == "EM AGUARDO"]["numero_nf"].astype(str).unique())
                 
                 nf_problema = st.selectbox("Selecione a NF com Ocorrência:", ["-"] + notas_pendentes_volta)
                 motivo_nao_retorno = st.selectbox("Motivo do Não Retorno do Canhoto:", [
@@ -258,11 +244,8 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                 
                 if st.button("Registrar Ocorrência") and nf_problema != "-":
                     if atualizar_status_bipagem(nf_problema, "status_volta", motivo_nao_retorno):
-                        col_cliente = [col for col in df_viagem.columns if "cliente" in col.lower() or "dest" in col.lower()]
-                        nome_cliente = df_viagem[df_viagem[nome_col_nf].astype(str) == nf_problema][col_cliente[0]].iloc[0] if col_cliente else "Cliente Não Identificado"
-                        
-                        col_previsao = [col for col in df_viagem.columns if "previsao" in col.lower() or "data" in col.lower()]
-                        data_prev = df_viagem[df_viagem[nome_col_nf].astype(str) == nf_problema][col_previsao[0]].iloc[0] if col_previsao else "N/A"
+                        nome_cliente = df_viagem[df_viagem["numero_nf"].astype(str) == nf_problema]["cliente"].iloc[0] if "cliente" in df_viagem.columns else "Cliente Não Identificado"
+                        data_prev = df_viagem[df_viagem["numero_nf"].astype(str) == nf_problema]["previsao_entrega"].iloc[0] if "previsao_entrega" in df_viagem.columns else "N/A"
 
                         nova_div_ret = [{
                             "Nota Fiscal": nf_problema,
