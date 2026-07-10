@@ -56,7 +56,8 @@ def salvar_dados_consolidados(dados_notas, dados_divergencias):
     try:
         if dados_notas:
             for nota in dados_notas:
-                supabase.table("tb_expedicao").upsert(nota).execute()
+                # Usa upsert baseado na constraint unique do numero_nf
+                supabase.table("tb_expedicao").upsert(nota, on_conflict="numero_nf").execute()
         if dados_divergencias:
             for div in dados_divergencias:
                 div_sql = {
