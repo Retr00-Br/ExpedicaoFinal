@@ -185,6 +185,18 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
             st.subheader("📋 Grid de Conferência da Viagem")
             st.dataframe(df_viagem, use_container_width=True)
 
+Perfeito, agora vendo a estrutura completa desses dois blocos específicos do seu código atual, fica fácil ajustar com exatidão onde o leitor realiza a extração.
+
+No código que você enviou, a extração da NF do leitor na aba Retorno Carga ainda está assim:
+
+Python
+nf_limpa = str(int(nf_bipada_ret[-9:])) if len(nf_bipada_ret) == 44 else str(int(nf_bipada_ret.strip()))
+Como vimos, buscar os últimos 9 dígitos pega o dígito verificador final da chave e quebra o cruzamento com o banco de dados.
+
+Aqui está o script corrigido para os dois blocos, já implementando a captura exata das posições 25 a 33 da chave de acesso (onde fica o número real da NF-e) e corrigindo um pequeno detalhe na linha linha_limpa = float_v = linha.strip() do bloco de Injeção que continha uma atribuição duplicada desnecessária.
+
+Substitua os dois blocos no seu código por este arquivo atualizado:
+Python
 # ==============================================================================
 # MODO: BIPAGEM - RETORNO CARGA
 # ==============================================================================
@@ -220,7 +232,11 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                 nf_bipada_ret = st.text_input("Aponte o Leitor (Canhoto):", key="txt_retorno", placeholder="Bipa o canhoto...")
                 
                 if nf_bipada_ret:
-                    nf_limpa = str(int(nf_bipada_ret[-9:])) if len(nf_bipada_ret) == 44 else str(int(nf_bipada_ret.strip()))
+                    # EXTRAÇÃO CORRIGIDA: Pega da posição 25 a 33 se for chave de 44 dígitos
+                    if len(nf_bipada_ret.strip()) == 44:
+                        nf_limpa = str(int(nf_bipada_ret.strip()[25:34]))
+                    else:
+                        nf_limpa = str(int(nf_bipada_ret.strip()))
                     
                     if nf_limpa in df_viagem["numero_nf"].astype(str).values:
                         if atualizar_status_bipagem(nf_limpa, "status_volta", "ENTREGUE / CANHOTO OK"):
@@ -252,7 +268,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                             "Arquivo XML": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
                             "Cliente": nome_cliente,
                             "Previsão Entrega": str(data_prev),
-                            "Status Auditoria": f"🚨 RETORNO COM ERRO ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
+                            "Status Auditoria": f"🚨 RETORNO WITH ERROR ({motivo_nao_retorno.replace('🚨 ', '').replace('❌ ', '').replace('🔄 ', '').replace('🔍 ', '')})",
                             "Justificativa / Motivo": f"Problema relatado no retorno do motorista: {motivo_nao_retorno}"
                         }]
                         salvar_dados_consolidados(None, nova_div_ret)
@@ -289,7 +305,7 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                     conteudo_csv = romaneio_file.getvalue().decode("utf-8", errors="ignore").splitlines()
                     
                     for linha in conteudo_csv:
-                        linha_limpa = float_v = linha.strip()
+                        linha_limpa = linha.strip()
                         if not linha_limpa:
                             continue
                         
