@@ -91,18 +91,31 @@ class SupabaseRepository(Repository):
             return []
 
     def upsert_lote(self, lista_dados: List[Dict[str, Any]]) -> bool:
-        """Realiza o Upsert fatiando em lotes menores para evitar estouro de buffer de memória."""
+        """
+        Realiza o Upsert fatiando em lotes menores para evitar estouro de buffer de memória.
+        BLINDAGEM ADICIONADA: Configurado para ignorar duplicatas baseando-se na chave correspondente.
+        Se o registro já existir no banco, ele NÃO altera e NÃO apaga nada. Mantém o dado original.
+        """
         if not lista_dados:
             return True
         
         tamanho_chunk = 150  # Tamanho otimizado para não estourar a API do Supabase
         sucesso_total = True
         
+        # Determina o campo de conflito com base no destino da tabela
+        campo_conflito = "nota_fiscal" if self.tabela == "tb_divergencias" else "numero_nf"
+        
         try:
             for i in range(0, len(lista_dados), tamanho_chunk):
                 chunk = lista_dados[i : i + tamanho_chunk]
-                # No Supabase, passamos o on_conflict explicitamente para upserts seguros
-                self.client.table(self.tabela).upsert(chunk).execute()
+                
+                # Executa o upsert blindado: ignora registros que já existem no Supabase
+                self.client.table(self.tabela).upsert(
+                    chunk,
+                    on_conflict=campo_conflito,
+                    ignore_duplicates=True  # <--- BLINDAGEM ATIVA AQUI
+                ).execute()
+                
             return sucesso_total
         except Exception as e:
             st.error(f"❌ Falha ao sincronizar lote com o Supabase: {e}")
@@ -209,7 +222,6 @@ def sincronizar_fila_local_pendente():
             if repo_divergencias.upsert_lote([payload]):
                 sucessos.append(item["id_interno"])
         elif tipo == "UPDATE_STATUS_EXPEDICAO":
-            # Extrai os parâmetros necessários salvos no payload
             coluna = payload.get("coluna")
             valor = payload.get("valor")
             reg_dt = payload.get("registrar_data_hora", False)
@@ -369,11 +381,9 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                         if nf_limpa and nf_limpa in df_viagem["numero_nf"].astype(str).values:
                             agora_carregamento = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
                             
-                            # SALVAR PRIMEIRO NA CONTINGÊNCIA LOCAL (Garantia de Dados)
                             payload_update = {"coluna": "status_ida", "valor": "CONFERIDO NA DOCA / EM TRÂNSITO", "registrar_data_hora": True}
                             fila_contingencia.salvar_offline(nf_limpa, payload_update, "UPDATE_STATUS_EXPEDICAO")
                             
-                            # Tenta enviar para a nuvem em tempo real
                             enviado = repo_expedicao.atualizar_coluna(
                                 nf_limpa, 
                                 "numero_nf", 
@@ -381,7 +391,6 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                             )
                             
                             if enviado:
-                                # Se subiu com sucesso, já podemos dar baixa na fila local pendente
                                 pendentes = fila_contingencia.obter_pendentes()
                                 ids_limpar = [item["id_interno"] for item in pendentes if item["identificador"] == nf_limpa]
                                 fila_contingencia.resolver_pendentes(ids_limpar)
@@ -412,7 +421,6 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                         nome_cliente = df_viagem[df_viagem["numero_nf"].astype(str) == nf_problema_ida]["cliente"].iloc[0] if "cliente" in df_viagem.columns else "Cliente Não Identificado"
                         data_prev = df_viagem[df_viagem["numero_nf"].astype(str) == nf_problema_ida]["previsao_entrega"].iloc[0] if "previsao_entrega" in df_viagem.columns else "N/A"
                         
-                        # Payload da ocorrência
                         div_payload = {
                             "nota_fiscal": nf_problema_ida,
                             "arquivo_xml": f"SAIDA_OCORRENCIA_{nf_problema_ida}.xml",
@@ -422,11 +430,9 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                             "justificativa_motivo": f"Problema relatado no carregamento às {agora_registro}: {motivo_nao_envio}"
                         }
                         
-                        # SALVA LOCALMENTE AMBOS OS FLUXOS
                         fila_contingencia.salvar_offline(nf_problema_ida, {"coluna": "status_ida", "valor": novo_status_motivo, "registrar_data_hora": True}, "UPDATE_STATUS_EXPEDICAO")
                         fila_contingencia.salvar_offline(nf_problema_ida, div_payload, "UPSERT_DIVERGENCIA")
                         
-                        # Tenta envio imediato para o Supabase
                         up_status = repo_expedicao.atualizar_coluna(nf_problema_ida, "numero_nf", {"status_ida": novo_status_motivo, "data_carregamento_ida": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                         up_div = repo_divergencias.upsert_lote([div_payload])
                         
@@ -437,7 +443,7 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                         
                         mostrar_modal_sucesso(
                             mensagem=f"Ocorrência de saída '{motivo_nao_envio}' registrada com sucesso para a NF {nf_problema_ida}!",
-                            detalhes_timestamp=f"Ocorrência computada em {agora_registro}"
+                            details_timestamp=f"Ocorrência computada em {agora_registro}"
                         )
                 
                 st.markdown("---")
@@ -481,7 +487,6 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                     if nf_limpa and nf_limpa in df_viagem["numero_nf"].astype(str).values:
                         agora_retorno = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
                         
-                        # SALVAR LOCALMENTE PRIMEIRO
                         fila_contingencia.salvar_offline(
                             nf_limpa, 
                             {"coluna": "status_volta", "valor": "ENTREGUE / CANHOTO OK", "registrar_data_hora": True}, 
@@ -527,17 +532,15 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                     div_payload = {
                         "nota_fiscal": nf_problema,
                         "arquivo_xml": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
-                        "cliente": nome_cliente,
+                        "cliente": name_cliente,
                         "previsao_entrega": str(data_prev),
                         "status_auditoria": f"🚨 RETORNO WITH ERROR ({motivo_nao_retorno})",
                         "justificativa_motivo": f"Problema relatado no retorno do motorista às {agora_retorno_problema}: {motivo_nao_retorno}"
                     }
                     
-                    # SALVA LOCALMENTE PRIMEIRO
                     fila_contingencia.salvar_offline(nf_problema, {"coluna": "status_volta", "valor": motivo_nao_retorno, "registrar_data_hora": True}, "UPDATE_STATUS_EXPEDICAO")
                     fila_contingencia.salvar_offline(nf_problema, div_payload, "UPSERT_DIVERGENCIA")
                     
-                    # Envia para a nuvem
                     up_status = repo_expedicao.atualizar_coluna(nf_problema, "numero_nf", {"status_volta": motivo_nao_retorno, "data_retorno_volta": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                     up_div = repo_divergencias.upsert_lote([div_payload])
                     
@@ -633,94 +636,109 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                             }
 
                     lista_divergencias = []
-                    notes_validadas = []
+                    novos_registros_expedicao = []
 
+                    # Processamento Seguro dos Arquivos XML
                     for xml_file in xml_files:
                         try:
                             tree = ET.parse(xml_file)
                             root = tree.getroot()
+                            
+                            # Namespace da NF-e
                             ns = {'ns': 'http://www.portalfiscal.inf.br/nfe'}
-
-                            num_nf_xml = root.find('.//ns:ide/ns:nNF', ns)
-                            cliente_xml = root.find('.//ns:dest/ns:xNome', ns)
-                            dhEmi_xml = root.find('.//ns:ide/ns:dhEmi', ns)
-                            vNF_xml = root.find('.//ns:total/ns:ICMSTot/ns:vNF', ns)
-
-                            if num_nf_xml is not None:
-                                nf_limpa = str(int(num_nf_xml.text.strip()))
-                                nome_cliente = cliente_xml.text.strip() if cliente_xml is not None else "Não Identificado"
-                                valor_nota = float(vNF_xml.text) if vNF_xml is not None else 0.0
+                            
+                            # Extração de campos essenciais
+                            infNFe = root.find('.//ns:infNFe', ns)
+                            if infNFe is None:
+                                continue
+                            
+                            ide = infNFe.find('ns:ide', ns)
+                            emit = infNFe.find('ns:emit', ns)
+                            dest = infNFe.find('ns:dest', ns)
+                            
+                            n_nf = ide.find('ns:nNF', ns).text if ide is not None else ""
+                            dh_emi = ide.find('ns:dhEmi', ns).text[:10] if ide is not None and ide.find('ns:dhEmi', ns) is not None else ""
+                            x_nome = dest.find('ns:xNome', ns).text if dest is not None else "CLIENTE DESCONHECIDO"
+                            
+                            if n_nf:
+                                num_nf_xml = str(int(n_nf))
                                 
-                                data_previsao_xml = "-"
-                                data_emissao_str = "-"
-                                if dhEmi_xml is not None and dhEmi_xml.text:
-                                    try:
-                                        data_iso = dhEmi_xml.text.split("T")[0]
-                                        data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
-                                        data_emissao_str = data_obj.strftime("%d/%m/%Y")
-                                        data_previsao_xml = (data_obj + timedelta(days=2)).strftime("%d/%m/%Y")
-                                    except: 
-                                        pass
-
-                                if nf_limpa in nfs_romaneios:
-                                    notes_validadas.append({
-                                        "numero_nf": nf_limpa,
-                                        "romaneio": nfs_romaneios[nf_limpa]["romaneio"],
-                                        "motorista": nfs_romaneios[nf_limpa]["motorista"],
-                                        "cliente": nome_cliente,
-                                        "valor_nota": valor_nota if valor_nota > 0 else nfs_romaneios[nf_limpa]["valor"],
-                                        "data_emissao": data_emissao_str,
-                                        "previsao_entrega": data_previsao_xml,
+                                # Se a NF-e do XML existe no arquivo de romaneios carregado
+                                if num_nf_xml in nfs_romaneios:
+                                    dados_romaneio = nfs_romaneios[num_nf_xml]
+                                    
+                                    # Formatação de previsões
+                                    dt_emissao = datetime.strptime(dh_emi, "%Y-%m-%d") if dh_emi else datetime.now()
+                                    previsao = (dt_emissao + timedelta(days=5)).strftime("%Y-%m-%d")
+                                    
+                                    payload_nota = {
+                                        "numero_nf": num_nf_xml,
+                                        "romaneio": dados_romaneio["romaneio"],
+                                        "motorista": dados_romaneio["motorista"],
+                                        "cliente": x_nome,
+                                        "valor_nota": dados_romaneio["valor"],
+                                        "data_emissao": dh_emi,
+                                        "previsao_entrega": previsao,
                                         "status_ida": "PENDENTE DE BIPAGEM",
                                         "status_volta": "EM AGUARDO"
-                                    })
+                                    }
+                                    novos_registros_expedicao.append(payload_nota)
                                 else:
-                                    lista_divergencias.append({
-                                        "Arquivo XML": xml_file.name,
-                                        "Nota Fiscal": nf_limpa,
-                                        "Cliente": nome_cliente,
-                                        "Previsão Entrega": data_previsao_xml,
-                                        "Status Auditoria": "🚨 FORA DO ROMANEIO (ÓRFÃ)",
-                                        "Justificativa / Motivo": "🗺️ Erro de Roteirização (Faturado sem Viagem)"
-                                    })
-                        except:
-                            continue
+                                    # Tratar XML como divergente (Não roteirizado/Órfão)
+                                    payload_div = {
+                                        "nota_fiscal": num_nf_xml,
+                                        "arquivo_xml": xml_file.name,
+                                        "cliente": x_nome,
+                                        "previsao_entrega": (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d"),
+                                        "status_auditoria": "🚨 XML SEM ROMANEIO",
+                                        "justificativa_motivo": "Nota importada via XML porém inexistente no romaneio carregado."
+                                    }
+                                    lista_divergencias.append(payload_div)
+                                    
+                        except Exception as xml_err:
+                            st.error(f"⚠️ Falha de parseamento no XML {xml_file.name}: {xml_err}")
 
-                    # --- ENVIO POLIMÓRFICO CONCRETO COM PROTEÇÃO CONTRA ALUCINAÇÃO DE MEMÓRIA ---
-                    sucesso_notas = repo_expedicao.upsert_lote(notes_validadas)
-                    
-                    divs_formatadas = []
-                    for div in lista_divergencias:
-                        divs_formatadas.append({
-                            "nota_fiscal": div["Nota Fiscal"],
-                            "arquivo_xml": div["Arquivo XML"],
-                            "cliente": div["Cliente"],
-                            "previsao_entrega": div["Previsão Entrega"],
-                            "status_auditoria": div["Status Auditoria"],
-                            "justificativa_motivo": div["Justificativa / Motivo"]
-                        })
-                    
-                    sucesso_divs = repo_divergencias.upsert_lote(divs_formatadas)
+                    # SALVA EM LOTE COM AS REGRAS DE INTEGRIDADE (IGNORE DUPLICATES)
+                    sucesso_carga = True
+                    if novos_registros_expedicao:
+                        # Salva em contingência física local
+                        for reg in novos_registros_expedicao:
+                            fila_contingencia.salvar_offline(reg["numero_nf"], reg, "UPSERT_EXPEDICAO")
+                        
+                        # Injeta no Supabase com ignore_duplicates ativo
+                        sucesso_carga = repo_expedicao.upsert_lote(novos_registros_expedicao)
 
-                    if sucesso_notas and sucesso_divs:
-                        st.success(f"📊 Processamento completo! {len(notes_validadas)} notas integradas e {len(lista_divergencias)} divergências salvas sem perda de dados!")
+                    if lista_divergencias:
+                        for div in lista_divergencias:
+                            fila_contingencia.salvar_offline(div["nota_fiscal"], div, "UPSERT_DIVERGENCIA")
+                        repo_divergencias.upsert_lote(lista_divergencias)
+
+                    if sucesso_carga:
+                        # Limpa os pendentes sincronizados com sucesso da fila local
+                        pendentes = fila_contingencia.obter_pendentes()
+                        ids_resolvidos = []
+                        for item in pendentes:
+                            id_nf = item["identificador"]
+                            if item["tipo_operacao"] == "UPSERT_EXPEDICAO" and id_nf in [x["numero_nf"] for x in novos_registros_expedicao]:
+                                ids_resolvidos.append(item["id_interno"])
+                            elif item["tipo_operacao"] == "UPSERT_DIVERGENCIA" and id_nf in [x["nota_fiscal"] for x in lista_divergencias]:
+                                ids_resolvidos.append(item["id_interno"])
+                                
+                        fila_contingencia.resolver_pendentes(ids_resolvidos)
+                        st.success("🎉 Injeção de dados executada com sucesso! Duplicatas e registros pré-existentes foram blindados e protegidos.")
                         st.rerun()
-                    else:
-                        st.warning("⚠️ Algumas notas falharam na sincronização de nuvem imediata, mas foram retidas localmente para re-tentativa automática.")
+                        
                 except Exception as e:
-                    st.error(f"⚠️ Erro no processamento global: {e}")
+                    st.error(f"❌ Falha de processamento geral da carga de arquivos: {e}")
 
 # ==============================================================================
 # MODO: DIVERGÊNCIAS DE XML
 # ==============================================================================
 elif modo_visao == "🚨 Divergências de XML":
-    st.title("🚨 Central Única de Auditoria e Divergências")
-    st.subheader("Todas as inconsistências de faturamento, ocorrências de retorno e notas retidas")
-
+    st.title("🚨 Alertas de Auditoria e Divergências de Notas")
+    st.subheader("Visualização física de incoerências identificadas")
+    
     if df_div.empty:
-        st.success("✅ Tudo limpo! Nenhuma divergência operacional ou nota retida ativa no banco de dados.")
+        st.success("✅ Nenhuma divergência operacional detectada no momento.")
     else:
-        st.warning(f"Atenção: Existem {len(df_div)} ocorrências ativas exigindo tratativa da supervisão.")
-        st.dataframe(df_div[[
-            "Arquivo XML", "Nota Fiscal", "Cliente", "Previsão Entrega", "Status Auditoria", "Justificativa / Motivo"
-        ]], use_container_width=True)
+        st.dataframe(df_div, use_container_width=True)
