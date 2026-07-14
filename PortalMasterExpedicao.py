@@ -85,14 +85,39 @@ def salvar_dados_consolidados(dados_notas, dados_divergencias):
         st.error(f"Erro ao salvar dados no Supabase: {e}")
         return False
 
-def atualizar_status_bipagem(numero_nf, coluna_status, novo_status):
+def atualizar_status_bipagem(numero_nf, coluna_status, novo_status, registrar_data_hora=False):
     try:
         nf_sanitizada = str(int(str(numero_nf).strip()))
-        resposta = supabase.table("tb_expedicao").update({coluna_status: novo_status}).eq("numero_nf", nf_sanitizada).execute()
+        dados_atualizacao = {coluna_status: novo_status}
+        
+        # Registra dinamicamente no banco a data e hora se as colunas existirem no seu schema do Supabase
+        # (Adaptado para evitar quebras de schema usando timestamps formatados)
+        agora_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if registrar_data_hora:
+            if coluna_status == "status_ida":
+                dados_atualizacao["data_carregamento_ida"] = agora_str
+            elif coluna_status == "status_volta":
+                dados_atualizacao["data_retorno_volta"] = agora_str
+                
+        resposta = supabase.table("tb_expedicao").update(dados_atualizacao).eq("numero_nf", nf_sanitizada).execute()
         return len(resposta.data) > 0
     except Exception as e:
-        st.error(f"Erro ao atualizar status: {e}")
-        return False
+        # Fallback de segurança se as colunas de data_carregamento_ida/data_retorno_volta não existirem na tabela física ainda
+        try:
+            resposta = supabase.table("tb_expedicao").update({coluna_status: novo_status}).eq("numero_nf", nf_sanitizada).execute()
+            return len(resposta.data) > 0
+        except Exception as err_fallback:
+            st.error(f"Erro ao atualizar status: {err_fallback}")
+            return False
+
+# --- FUNÇÃO HELPER PARA DIALOGS DE EXPEDIÇÃO CONCLUÍDA (FEEDBACK VISUAL ESTILO E-COMMERCE) ---
+@st.dialog("📦 Expedição Realizada")
+def mostrar_modal_sucesso(mensagem, detalhes_timestamp):
+    st.success(mensagem)
+    st.markdown(f"**🕒 Registro do Sistema:** {detalhes_timestamp}")
+    st.write("A operação foi salva com sucesso no banco de dados e as planilhas de conferência foram atualizadas.")
+    if st.button("👍 Prosseguir", use_container_width=True):
+        st.rerun()
 
 # --- CARREGAMENTO DE DADOS INICIAIS ---
 df_principal = carregar_dados_principais()
@@ -164,17 +189,60 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                 st.info(f"🚚 Motorista Escalado: {nome_motorista} | Total de Notas: {len(df_viagem)}")
                 
                 st.markdown("---")
-                st.markdown("### 🔍 Validação de Saída Física")
-                nf_bipada_saida = st.text_input("Aponte o Leitor para o Código de Barras (Saída):", key="txt_saida", placeholder="Bipa a nota fiscal...")
                 
-                if nf_bipada_saida:
-                    nf_limpa = extrair_nf_da_bipagem(nf_bipada_saida)
-                    if nf_limpa and nf_limpa in df_viagem["numero_nf"].astype(str).values:
-                        if atualizar_status_bipagem(nf_limpa, "status_ida", "CONFERIDO NA DOCA / EM TRÂNSITO"):
-                            st.success(f"✅ NF {nf_limpa} liberada e embarcada com sucesso!")
-                            st.rerun()
-                    else:
-                        st.error(f"❌ Erro de Carregamento: O código lido não corresponde a nenhuma NF pendente deste romaneio!")
+                # Divisão visual em colunas: Conferência Física de Saída Vs Registro de Problemas na Saída
+                col_bipa_ida, col_problemas_ida = st.columns(2)
+                
+                with col_bipa_ida:
+                    st.markdown("### 🔍 Validação de Saída Física (Carregamento)")
+                    nf_bipada_saida = st.text_input("Aponte o Leitor para o Código de Barras (Saída):", key="txt_saida", placeholder="Bipa a nota fiscal...")
+                    
+                    if nf_bipada_saida:
+                        nf_limpa = extrair_nf_da_bipagem(nf_bipada_saida)
+                        if nf_limpa and nf_limpa in df_viagem["numero_nf"].astype(str).values:
+                            agora_carregamento = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
+                            if atualizar_status_bipagem(nf_limpa, "status_ida", "CONFERIDO NA DOCA / EM TRÂNSITO", registrar_data_hora=True):
+                                # Dispara a caixa de sucesso para prosseguir estilo e-commerce
+                                mostrar_modal_sucesso(
+                                    mensagem=f"Nota Fiscal {nf_limpa} liberada e carregada com sucesso!",
+                                    detalhes_timestamp=f"Expedição realizada em {agora_carregamento}"
+                                )
+                        else:
+                            st.error(f"❌ Erro de Carregamento: O código lido não corresponde a nenhuma NF pendente deste romaneio!")
+                
+                with col_problemas_ida:
+                    st.markdown("### ⚠️ Registro de Pendências/Não Envio")
+                    notas_pendentes_ida = list(df_viagem[df_viagem["status_ida"] == "PENDENTE DE BIPAGEM"]["numero_nf"].astype(str).unique())
+                    
+                    nf_problema_ida = st.selectbox("Selecione a NF não embarcada:", ["-"] + notas_pendentes_ida, key="sel_problema_ida")
+                    motivo_nao_envio = st.selectbox("Selecione o motivo de não embarque:", [
+                        "Nota não realizada",
+                        "Falta de Material",
+                        "Mudança na data"
+                    ])
+                    
+                    if st.button("Registrar Ocorrência de Saída") and nf_problema_ida != "-":
+                        agora_registro = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
+                        novo_status_motivo = f"🚨 RETIDA ({motivo_nao_envio.upper()})"
+                        
+                        if atualizar_status_bipagem(nf_problema_ida, "status_ida", novo_status_motivo, registrar_data_hora=True):
+                            nome_cliente = df_viagem[df_viagem["numero_nf"].astype(str) == nf_problema_ida]["cliente"].iloc[0] if "cliente" in df_viagem.columns else "Cliente Não Identificado"
+                            data_prev = df_viagem[df_viagem["numero_nf"].astype(str) == nf_problema_ida]["previsao_entrega"].iloc[0] if "previsao_entrega" in df_viagem.columns else "N/A"
+
+                            nova_div_ida = [{
+                                "Nota Fiscal": nf_problema_ida,
+                                "Arquivo XML": f"SAIDA_OCORRENCIA_{nf_problema_ida}.xml",
+                                "Cliente": nome_cliente,
+                                "Previsão Entrega": str(data_prev),
+                                "Status Auditoria": f"🚨 EXPEDIÇÃO RECUSADA ({motivo_nao_envio.upper()})",
+                                "Justificativa / Motivo": f"Problema relatado no carregamento às {agora_registro}: {motivo_nao_envio}"
+                            }]
+                            salvar_dados_consolidados(None, nova_div_ida)
+                            
+                            mostrar_modal_sucesso(
+                                mensagem=f"Ocorrência de saída '{motivo_nao_envio}' registrada com sucesso para a NF {nf_problema_ida}!",
+                                detalhes_timestamp=f"Ocorrência computada em {agora_registro}"
+                            )
                 
                 st.markdown("---")
                 st.subheader("📋 Notas Vinculadas a esta Viagem")
@@ -215,9 +283,12 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                 if nf_bipada_ret:
                     nf_limpa = extrair_nf_da_bipagem(nf_bipada_ret)
                     if nf_limpa and nf_limpa in df_viagem["numero_nf"].astype(str).values:
-                        if atualizar_status_bipagem(nf_limpa, "status_volta", "ENTREGUE / CANHOTO OK"):
-                            st.success(f"✅ Baixa confirmada para a NF {nf_limpa} no banco de dados!")
-                            st.rerun()
+                        agora_retorno = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
+                        if atualizar_status_bipagem(nf_limpa, "status_volta", "ENTREGUE / CANHOTO OK", registrar_data_hora=True):
+                            mostrar_modal_sucesso(
+                                mensagem=f"Baixa confirmada para a NF {nf_limpa}! Canhoto validado e retornado física/digitalmente.",
+                                detalhes_timestamp=f"Retorno de Carga realizado em {agora_retorno}"
+                            )
                     else:
                         st.error(f"❌ Erro de Roteiro: O código lido não pertence a esta viagem!")
 
@@ -235,7 +306,8 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                 ])
                 
                 if st.button("Registrar Ocorrência") and nf_problema != "-":
-                    if atualizar_status_bipagem(nf_problema, "status_volta", motivo_nao_retorno):
+                    agora_retorno_problema = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
+                    if atualizar_status_bipagem(nf_problema, "status_volta", motivo_nao_retorno, registrar_data_hora=True):
                         nome_cliente = df_viagem[df_viagem["numero_nf"].astype(str) == nf_problema]["cliente"].iloc[0] if "cliente" in df_viagem.columns else "Cliente Não Identificado"
                         data_prev = df_viagem[df_viagem["numero_nf"].astype(str) == nf_problema]["previsao_entrega"].iloc[0] if "previsao_entrega" in df_viagem.columns else "N/A"
 
@@ -245,11 +317,14 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                             "Cliente": nome_cliente,
                             "Previsão Entrega": str(data_prev),
                             "Status Auditoria": f"🚨 RETORNO WITH ERROR ({motivo_nao_retorno})",
-                            "Justificativa / Motivo": f"Problema relatado no retorno do motorista: {motivo_nao_retorno}"
+                            "Justificativa / Motivo": f"Problema relatado no retorno do motorista às {agora_retorno_problema}: {motivo_nao_retorno}"
                         }]
                         salvar_dados_consolidados(None, nova_div_ret)
-                        st.error(f"📌 Ocorrência gravada na auditoria do Supabase para a NF {nf_problema}.")
-                        st.rerun()
+                        
+                        mostrar_modal_sucesso(
+                            mensagem=f"Ocorrência de retorno gravada com sucesso para a NF {nf_problema}!",
+                            detalhes_timestamp=f"Ocorrência catalogada às {agora_retorno_problema}"
+                        )
 
             st.markdown("---")
             st.subheader("📋 Grid de Controle de Entrega Física da Viagem")
