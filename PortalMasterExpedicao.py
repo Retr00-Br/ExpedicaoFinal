@@ -35,8 +35,9 @@ def extrair_nf_da_bipagem(input_bipado: str) -> str:
     return ""
 
 # --- FUNÇÕES DE INTERAÇÃO COM O BANCO ---
-def carregar_dados_principais():
+def carregar_dados_principains():
     try:
+        # Forçamos a consulta sem cache para garantir sincronização em tempo real
         resposta = supabase.table("tb_expedicao").select("*").execute()
         if resposta.data and len(resposta.data) > 0:
             return pd.DataFrame(resposta.data)
@@ -90,8 +91,6 @@ def atualizar_status_bipagem(numero_nf, coluna_status, novo_status, registrar_da
         nf_sanitizada = str(int(str(numero_nf).strip()))
         dados_atualizacao = {coluna_status: novo_status}
         
-        # Registra dinamicamente no banco a data e hora se as colunas existirem no seu schema do Supabase
-        # (Adaptado para evitar quebras de schema usando timestamps formatados)
         agora_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if registrar_data_hora:
             if coluna_status == "status_ida":
@@ -102,7 +101,6 @@ def atualizar_status_bipagem(numero_nf, coluna_status, novo_status, registrar_da
         resposta = supabase.table("tb_expedicao").update(dados_atualizacao).eq("numero_nf", nf_sanitizada).execute()
         return len(resposta.data) > 0
     except Exception as e:
-        # Fallback de segurança se as colunas de data_carregamento_ida/data_retorno_volta não existirem na tabela física ainda
         try:
             resposta = supabase.table("tb_expedicao").update({coluna_status: novo_status}).eq("numero_nf", nf_sanitizada).execute()
             return len(resposta.data) > 0
@@ -110,17 +108,17 @@ def atualizar_status_bipagem(numero_nf, coluna_status, novo_status, registrar_da
             st.error(f"Erro ao atualizar status: {err_fallback}")
             return False
 
-# --- FUNÇÃO HELPER PARA DIALOGS DE EXPEDIÇÃO CONCLUÍDA (FEEDBACK VISUAL ESTILO E-COMMERCE) ---
+# --- FUNÇÃO HELPER PARA DIALOGS DE EXPEDIÇÃO CONCLUÍDA ---
 @st.dialog("📦 Expedição Realizada")
 def mostrar_modal_sucesso(mensagem, detalhes_timestamp):
     st.success(mensagem)
     st.markdown(f"**🕒 Registro do Sistema:** {detalhes_timestamp}")
-    st.write("A operação foi salva com sucesso no banco de dados e as planilhas de conferência foram atualizadas.")
+    st.write("A operação foi salva com sucesso no banco de dados.")
     if st.button("👍 Prosseguir", use_container_width=True):
         st.rerun()
 
 # --- CARREGAMENTO DE DADOS INICIAIS ---
-df_principal = carregar_dados_principais()
+df_principal = carregar_dados_principains()
 df_div = carregar_divergencias()
 
 # --- MENU LATERAL ---
@@ -190,7 +188,6 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                 
                 st.markdown("---")
                 
-                # Divisão visual em colunas: Conferência Física de Saída Vs Registro de Problemas na Saída
                 col_bipa_ida, col_problemas_ida = st.columns(2)
                 
                 with col_bipa_ida:
@@ -202,7 +199,6 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                         if nf_limpa and nf_limpa in df_viagem["numero_nf"].astype(str).values:
                             agora_carregamento = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
                             if atualizar_status_bipagem(nf_limpa, "status_ida", "CONFERIDO NA DOCA / EM TRÂNSITO", registrar_data_hora=True):
-                                # Dispara a caixa de sucesso para prosseguir estilo e-commerce
                                 mostrar_modal_sucesso(
                                     mensagem=f"Nota Fiscal {nf_limpa} liberada e carregada com sucesso!",
                                     detalhes_timestamp=f"Expedição realizada em {agora_carregamento}"
@@ -215,7 +211,10 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                     notas_pendentes_ida = list(df_viagem[df_viagem["status_ida"] == "PENDENTE DE BIPAGEM"]["numero_nf"].astype(str).unique())
                     
                     nf_problema_ida = st.selectbox("Selecione a NF não embarcada:", ["-"] + notas_pendentes_ida, key="sel_problema_ida")
+                    
+                    # INCLUSÃO SOLICITADA: "Perda de nota" adicionado à lista de motivos
                     motivo_nao_envio = st.selectbox("Selecione o motivo de não embarque:", [
+                        "Perda de nota",
                         "Nota não realizada",
                         "Falta de Material",
                         "Mudança na data"
@@ -241,7 +240,7 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                             
                             mostrar_modal_sucesso(
                                 mensagem=f"Ocorrência de saída '{motivo_nao_envio}' registrada com sucesso para a NF {nf_problema_ida}!",
-                                detalhes_timestamp=f"Ocorrência computada em {agora_registro}"
+                                detalles_timestamp=f"Ocorrência computada em {agora_registro}"
                             )
                 
                 st.markdown("---")
@@ -331,7 +330,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
             st.dataframe(df_viagem, use_container_width=True)
 
 # ==============================================================================
-# MODO: INJEÇÃO DE PLANILHAS (SISTEMA DE CAPTURA CORRIGIDO PARA ARQUIVOS GRANDES)
+# MODO: INJEÇÃO DE PLANILHAS (SISTEMA DE CAPTURA CORRIGIDO PARA REALIDADE DO ERP)
 # ==============================================================================
 elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
     st.title("⚙️ Painel de Carga e Cruzamento de Dados")
@@ -364,11 +363,8 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                         if len(colunas) == 0:
                             continue
                         
-                        # --- MOTOR DE EXTRAÇÃO REFEITO ---
-                        # Evita falhar se o separador mudar ou se houver espaços ocultos no cabeçalho
+                        # Captura cabeçalhos de Romaneio dinamicamente
                         primeira_celula = colunas[0]
-                        
-                        # Se contiver a expressão regular de romaneio ex: "11250 -" ou similar, captura
                         if re.match(r'^\d+\s*-', primeira_celula):
                             romaneio_atual = primeira_celula.split("-")[0].strip()
                             if len(colunas) > 4 and colunas[4]:
@@ -378,25 +374,49 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                         if "Nr. Romaneio" in primeira_celula or "Filial" in primeira_celula:
                             continue
                         
-                        # Captura as Notas Fiscais dinamicamente sem limite posicional rígido
-                        if len(colunas) >= 12:
-                            # Tenta ler a NF na coluna 10 (Índice padrão do ERP)
-                            num_nf_raw = colunas[10].strip()
-                            valor_raw = colunas[11].strip()
+                        # --- MOTOR DE CAPTURA ROBUSTO E DINÂMICO ---
+                        # Removemos a dependência posicional rígida. Buscamos valores reais nas colunas
+                        # varrendo os índices do fim para o início (onde as notas e valores de NF residem no layout de romaneio)
+                        num_nf_raw = ""
+                        valor_raw = ""
+                        
+                        # Filtra colunas populadas de trás para frente para achar a NF e o Valor correspondente
+                        colunas_validas = [c for c in colunas if c != ""]
+                        
+                        if len(colunas_validas) >= 3:
+                            # O padrão do ERP traz o valor na última coluna populada e o número da NF na penúltima
+                            # Ex: ...;171094;R$ 923,96;10/07/2026 (ou sem data de entrega no final)
+                            for idx, celula in enumerate(colunas):
+                                # Procura um padrão monetário "R$"
+                                if "R$" in celula:
+                                    valor_raw = celula
+                                    # Normalmente a NF está na coluna imediatamente anterior à esquerda
+                                    if idx > 0 and colunas[idx-1].isdigit():
+                                        num_nf_raw = colunas[idx-1]
+                                    break
+                                    
+                            # Fallback caso não encontre pelo símbolo de R$
+                            if not num_nf_raw:
+                                for celula in reversed(colunas):
+                                    if celula.isdigit() and len(celula) >= 4 and len(celula) <= 9:
+                                        num_nf_raw = celula
+                                        break
+                        
+                        if num_nf_raw and num_nf_raw.isdigit() and num_nf_raw != "0":
+                            num_nf_limpo = str(int(num_nf_raw))
                             
-                            if num_nf_raw.isdigit() and num_nf_raw != "0":
-                                num_nf_limpo = str(int(num_nf_raw))
-                                valor_limpo = valor_raw.replace("R$", "").replace(".", "").replace(",", ".").strip()
-                                try:
-                                    valor_estimado = float(valor_limpo)
-                                except:
-                                    valor_estimado = 0.0
+                            # Tratamento numérico robusto do valor da nota
+                            valor_limpo = valor_raw.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".").strip()
+                            try:
+                                valor_estimado = float(valor_limpo)
+                            except:
+                                valor_estimado = 0.0
                                             
-                                nfs_romaneios[num_nf_limpo] = {
-                                    "romaneio": romaneio_atual,
-                                    "motorista": motorista_atual if motorista_atual != "-" else "MOTORISTA PADRÃO",
-                                    "valor": valor_estimado
-                                }
+                            nfs_romaneios[num_nf_limpo] = {
+                                "romaneio": romaneio_atual,
+                                "motorista": motorista_atual if motorista_atual != "-" else "MOTORISTA PADRÃO",
+                                "valor": valor_estimado
+                            }
 
                     lista_divergencias = []
                     notes_validadas = []
@@ -454,8 +474,6 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                             continue
 
                     # --- SUBIDA EM LOTE (BULK UPSERT) OTIMIZADO ---
-                    # Dividimos em blocos de 200 registros para garantir que o Supabase/PostgreSQL 
-                    # processe tudo sem estourar o buffer de memória ou dar timeout.
                     tamanho_lote = 200
                     sucesso_salvamento = True
                     
