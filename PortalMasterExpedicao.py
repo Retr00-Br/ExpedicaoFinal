@@ -164,7 +164,8 @@ class SQLiteQueue(LocalQueue):
             )
             conn.commit()
 
-    def obtener_pendentes(self) -> List[Dict[str, Any]]:
+    # Corrigido de 'obtener_pendentes' para 'obter_pendentes'
+    def obter_pendentes(self) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id, identificador, payload, tipo_operacao FROM tb_contingencia ORDER BY id ASC")
@@ -188,7 +189,7 @@ class SQLiteQueue(LocalQueue):
             placeholders = ",".join("?" for _ in ids_resolvidos)
             cursor.execute(f"DELETE FROM tb_contingencia WHERE id IN ({placeholders})", ids_resolvidos)
             conn.commit()
-
+            
 # ==============================================================================
 # INICIALIZAÇÃO DE REPOSITÓRIOS COM INJEÇÃO DE DEPENDÊNCIA
 # ==============================================================================
