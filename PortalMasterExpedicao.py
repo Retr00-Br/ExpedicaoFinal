@@ -164,7 +164,7 @@ class SQLiteQueue(LocalQueue):
             )
             conn.commit()
 
-    def obter_pendentes(self) -> List[Dict[str, Any]]:
+    def obtener_pendentes(self) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_name) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id, identificador, payload, tipo_operacao FROM tb_contingencia ORDER BY id ASC")
@@ -443,7 +443,7 @@ elif modo_visao == "📤 Bipagem - Saída Expedição":
                         
                         mostrar_modal_sucesso(
                             mensagem=f"Ocorrência de saída '{motivo_nao_envio}' registrada com sucesso para a NF {nf_problema_ida}!",
-                            details_timestamp=f"Ocorrência computada em {agora_registro}"
+                            detalhes_timestamp=f"Ocorrência computada em {agora_registro}"
                         )
                 
                 st.markdown("---")
@@ -532,7 +532,7 @@ elif modo_visao == "📥 Bipagem - Retorno Carga":
                     div_payload = {
                         "nota_fiscal": nf_problema,
                         "arquivo_xml": f"RETORNO_OCORRENCIA_{nf_problema}.xml",
-                        "cliente": name_cliente,
+                        "cliente": nome_cliente,
                         "previsao_entrega": str(data_prev),
                         "status_auditoria": f"🚨 RETORNO WITH ERROR ({motivo_nao_retorno})",
                         "justificativa_motivo": f"Problema relatado no retorno do motorista às {agora_retorno_problema}: {motivo_nao_retorno}"
@@ -638,20 +638,18 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                     lista_divergencias = []
                     novos_registros_expedicao = []
 
-                    # Processamento Seguro dos Arquivos XML
+                    # Reconstrução do Processamento Seguro dos Arquivos XML
                     for xml_file in xml_files:
                         try:
                             tree = ET.parse(xml_file)
                             root = tree.getroot()
                             
-                            # Namespace da NF-e
                             ns = {'ns': 'http://www.portalfiscal.inf.br/nfe'}
                             
-                            # Extração de campos essenciais
                             infNFe = root.find('.//ns:infNFe', ns)
                             if infNFe is None:
                                 continue
-                            
+                                
                             ide = infNFe.find('ns:ide', ns)
                             emit = infNFe.find('ns:emit', ns)
                             dest = infNFe.find('ns:dest', ns)
@@ -663,11 +661,10 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                             if n_nf:
                                 num_nf_xml = str(int(n_nf))
                                 
-                                # Se a NF-e do XML existe no arquivo de romaneios carregado
+                                # Verifica se a NF pertence ao romaneio
                                 if num_nf_xml in nfs_romaneios:
                                     dados_romaneio = nfs_romaneios[num_nf_xml]
                                     
-                                    # Formatação de previsões
                                     dt_emissao = datetime.strptime(dh_emi, "%Y-%m-%d") if dh_emi else datetime.now()
                                     previsao = (dt_emissao + timedelta(days=5)).strftime("%Y-%m-%d")
                                     
@@ -684,13 +681,13 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                                     }
                                     novos_registros_expedicao.append(payload_nota)
                                 else:
-                                    # Tratar XML como divergente (Não roteirizado/Órfão)
+                                    # NF Órfã (Inexistente no romaneio carregado)
                                     payload_div = {
                                         "nota_fiscal": num_nf_xml,
                                         "arquivo_xml": xml_file.name,
                                         "cliente": x_nome,
                                         "previsao_entrega": (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d"),
-                                        "status_auditoria": "🚨 XML SEM ROMANEIO",
+                                        "status_auditoria": "⚠️ XML SEM ROMANEIO",
                                         "justificativa_motivo": "Nota importada via XML porém inexistente no romaneio carregado."
                                     }
                                     lista_divergencias.append(payload_div)
@@ -698,14 +695,11 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                         except Exception as xml_err:
                             st.error(f"⚠️ Falha de parseamento no XML {xml_file.name}: {xml_err}")
 
-                    # SALVA EM LOTE COM AS REGRAS DE INTEGRIDADE (IGNORE DUPLICATES)
+                    # Salva em lote e limpa as contingências locais
                     sucesso_carga = True
                     if novos_registros_expedicao:
-                        # Salva em contingência física local
                         for reg in novos_registros_expedicao:
                             fila_contingencia.salvar_offline(reg["numero_nf"], reg, "UPSERT_EXPEDICAO")
-                        
-                        # Injeta no Supabase com ignore_duplicates ativo
                         sucesso_carga = repo_expedicao.upsert_lote(novos_registros_expedicao)
 
                     if lista_divergencias:
@@ -714,7 +708,6 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                         repo_divergencias.upsert_lote(lista_divergencias)
 
                     if sucesso_carga:
-                        # Limpa os pendentes sincronizados com sucesso da fila local
                         pendentes = fila_contingencia.obter_pendentes()
                         ids_resolvidos = []
                         for item in pendentes:
@@ -727,7 +720,7 @@ elif modo_visao == "⚙️ Injeção de Planilhas (Carga)":
                         fila_contingencia.resolver_pendentes(ids_resolvidos)
                         st.success("🎉 Injeção de dados executada com sucesso! Duplicatas e registros pré-existentes foram blindados e protegidos.")
                         st.rerun()
-                        
+
                 except Exception as e:
                     st.error(f"❌ Falha de processamento geral da carga de arquivos: {e}")
 
